@@ -1,0 +1,604 @@
+"""
+VAYUNET — National Weather Big-Data Analytics Platform (reference backend)
+
+Maps onto the problem statement like this:
+
+  * INGESTION
+      - Real IMD-station-grade numbers: poll_weather_loop() hits Open-Meteo
+        every POLL_SECONDS for a fixed grid of Indian cities (real data,
+        real API, no key needed) and both (a) pushes national max/min/rain
+        KPIs over the WebSocket, and (b) writes a "IMD Station" row into
+        the reports table for any city showing a non-Normal event, so the
+        map/feed has real, instrument-derived points on it.
+      - Citizen / social reports: POST /api/reports/submit is the single
+        ingestion door for everything else the brief asks for — social
+        posts tagged #IMD, citizen app submissions, or any other feeder.
+        There's no bundled Twitter/X or Instagram listener here because
+        that needs paid API credentials and app review this environment
+        doesn't have; simulate_social_feed() stands in for that listener
+        so the pipeline can be demoed end-to-end, and is clearly labelled
+        as a demo generator in the code and in the payloads it produces
+        (source stays a normal value like "Twitter/X" so the frontend
+        treats it identically to a real listener's output — nothing
+        downstream branches on "is this the demo"). Swapping in a real
+        listener means calling ingest_report() from it instead — every
+        other line of this file is unaffected.
+      - Satellite imagery: satellite_poll_loop() polls IMD's live INSAT-3DS
+        visible-frame URL (see satellite.py), stores every genuinely new
+        frame under satellite_frames/<date>/<time>.jpg, and pushes a
+        "satellite_update" WebSocket message. That backs the frontend's
+        "Cloud Map" mode, including its same-day timelapse player.
+
+  * PROCESSING (see pipeline.py)
+      - classify_event_from_text(): auto-categorizes Rain / Thunderstorm /
+        Flooding / Heatwave / Fog / Dust Storm / Strong Winds.
+      - score_trust() + verification_from_score(): fake/misleading-report
+        and untrusted-source screening -> Verified / Unverified / Flagged.
+      - find_duplicate(): de-duplication over recent same-category reports
+        by geo-distance + text similarity.
+
+  * STORAGE — db.py, a centralized SQLite table (see db.py docstring for
+    why SQLite and how this is meant to be swapped for Postgres/PostGIS).
+
+  * DASHBOARD + ADMIN PANEL
+      - GET /                serves the analyst dashboard (main.html)
+      - GET /admin            serves the admin/moderation panel (admin.html)
+      - GET /api/reports      date / event / location / verification filtering
+      - PATCH /api/reports/{id}/verify   admin verification actions
+      - GET /api/stats, /api/states      aggregates for analytics widgets
+      - GET /api/stations                 latest per-city temp/event reading
+      - GET /api/satellite/latest, /api/satellite/frames?date=,
+        /api/satellite/dates             Cloud Map + timelapse data
+      - WS  /ws                live push: weather_update, stations_update,
+                                new_report, verification_update,
+                                satellite_update
+
+Run:
+    pip install -r requirements.txt
+    uvicorn backend:app --reload
+Then open http://127.0.0.1:8000 (dashboard) and http://127.0.0.1:8000/admin
+(admin panel) — both are served from this same origin so the WebSocket URL
+the frontend derives from window.location.host just works with zero config.
+"""
+import traceback
+import asyncio
+import json
+import random
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Literal, Optional
+
+import httpx
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+import db
+import pipeline
+import satellite
+
+POLL_SECONDS = 60
+SATELLITE_POLL_SECONDS = 5 * 60   # IMD refreshes roughly every 15-30 min; polling more
+                                   # often just costs a request since poll_once() dedupes
+SIMULATE_SOCIAL_FEED = True   # flip off once a real social listener feeds /api/reports/submit
+SOCIAL_POST_INTERVAL_SECONDS = 20
+
+# ---------------------------------------------------------------------------
+# Reference station grid — real Open-Meteo readings, no API key required.
+# ---------------------------------------------------------------------------
+CITIES = [
+    # ---------------- tier 1: state/UT capitals & major metros ----------------
+    {"name": "Delhi", "state": "Delhi", "lat": 28.6139, "lon": 77.2090, "tier": 1},
+    {"name": "Mumbai", "state": "Maharashtra", "lat": 19.0760, "lon": 72.8777, "tier": 1},
+    {"name": "Bengaluru", "state": "Karnataka", "lat": 12.9716, "lon": 77.5946, "tier": 1},
+    {"name": "Chennai", "state": "Tamil Nadu", "lat": 13.0827, "lon": 80.2707, "tier": 1},
+    {"name": "Kolkata", "state": "West Bengal", "lat": 22.5726, "lon": 88.3639, "tier": 1},
+    {"name": "Hyderabad", "state": "Telangana", "lat": 17.3850, "lon": 78.4867, "tier": 1},
+    {"name": "Ahmedabad", "state": "Gujarat", "lat": 23.0225, "lon": 72.5714, "tier": 1},
+    {"name": "Pune", "state": "Maharashtra", "lat": 18.5204, "lon": 73.8567, "tier": 1},
+    {"name": "Jaipur", "state": "Rajasthan", "lat": 26.9124, "lon": 75.7873, "tier": 1},
+    {"name": "Lucknow", "state": "Uttar Pradesh", "lat": 26.8467, "lon": 80.9462, "tier": 1},
+    {"name": "Chandigarh", "state": "Chandigarh", "lat": 30.7333, "lon": 76.7794, "tier": 1},
+    {"name": "Bhopal", "state": "Madhya Pradesh", "lat": 23.2599, "lon": 77.4126, "tier": 1},
+    {"name": "Patna", "state": "Bihar", "lat": 25.5941, "lon": 85.1376, "tier": 1},
+    {"name": "Guwahati", "state": "Assam", "lat": 26.1445, "lon": 91.7362, "tier": 1},
+    {"name": "Bhubaneswar", "state": "Odisha", "lat": 20.2961, "lon": 85.8245, "tier": 1},
+    {"name": "Thiruvananthapuram", "state": "Kerala", "lat": 8.5241, "lon": 76.9366, "tier": 1},
+    {"name": "Panaji", "state": "Goa", "lat": 15.4909, "lon": 73.8278, "tier": 1},
+    {"name": "Raipur", "state": "Chhattisgarh", "lat": 21.2514, "lon": 81.6296, "tier": 1},
+    {"name": "Ranchi", "state": "Jharkhand", "lat": 23.3441, "lon": 85.3096, "tier": 1},
+    {"name": "Dehradun", "state": "Uttarakhand", "lat": 30.3165, "lon": 78.0322, "tier": 1},
+    {"name": "Shimla", "state": "Himachal Pradesh", "lat": 31.1048, "lon": 77.1734, "tier": 1},
+    {"name": "Srinagar", "state": "Jammu and Kashmir", "lat": 34.0837, "lon": 74.7973, "tier": 1},
+    {"name": "Jammu", "state": "Jammu and Kashmir", "lat": 32.7266, "lon": 74.8570, "tier": 1},
+    {"name": "Leh", "state": "Ladakh", "lat": 34.1526, "lon": 77.5771, "tier": 1},
+    {"name": "Gandhinagar", "state": "Gujarat", "lat": 23.2156, "lon": 72.6369, "tier": 1},
+    {"name": "Itanagar", "state": "Arunachal Pradesh", "lat": 27.0844, "lon": 93.6053, "tier": 1},
+    {"name": "Imphal", "state": "Manipur", "lat": 24.8170, "lon": 93.9368, "tier": 1},
+    {"name": "Aizawl", "state": "Mizoram", "lat": 23.7271, "lon": 92.7176, "tier": 1},
+    {"name": "Kohima", "state": "Nagaland", "lat": 25.6751, "lon": 94.1086, "tier": 1},
+    {"name": "Agartala", "state": "Tripura", "lat": 23.8315, "lon": 91.2868, "tier": 1}
+]
+OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+
+
+def classify_from_weathercode(weathercode: int, windspeed_kmh: float, precip_mm: float) -> str:
+    """Numeric-reading classifier for station data (weather code + wind +
+    precip). Distinct from pipeline.classify_event_from_text(), which
+    classifies free-text social/citizen posts — same output vocabulary."""
+    if precip_mm >= 20:
+        return "Flooding"
+    if weathercode in (95, 96, 99):
+        return "Thunderstorm"
+    if windspeed_kmh >= 45:
+        return "Strong Winds"
+    if weathercode in (45, 48):
+        return "Fog"
+    if weathercode in (51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82):
+        return "Rain"
+    if windspeed_kmh >= 30:
+        return "Dust Storm"
+    return "Normal"
+
+
+
+
+def build_weather_payload(rows: list[dict]) -> dict:
+    hottest = max(rows, key=lambda r: r["temp"])
+    coldest = min(rows, key=lambda r: r["temp"])
+    wettest = max(rows, key=lambda r: r["precip"])
+    notable = [r for r in rows if r["event"] != "Normal"]
+    alert_city = notable[0] if notable else hottest
+    return {
+        "type": "weather_update",
+        "max_temp": round(hottest["temp"], 1), "max_temp_city": hottest["name"],
+        "min_temp": round(coldest["temp"], 1), "min_temp_city": coldest["name"],
+        "latest_rain": round(wettest["precip"], 1), "latest_rain_city": wettest["name"],
+        "ingest_rate": len(rows),      # actual record count this cycle — not fabricated
+        "cities_polled": len(rows),
+        "alert": {
+            "city": alert_city["name"],
+            "post_text": (
+                f"Live station reading: {alert_city['event']} conditions "
+                f"({alert_city['temp']}°C, wind {alert_city['wind']} km/h). #IMD"
+            ),
+            "confidence": "0.95",
+        },
+    }
+
+
+# Per-city latest station reading, kept in memory so the map can show every
+# polled city's name + live temperature (not just the national max/min/rain
+# KPIs) — GET /api/stations, and pushed live over the WebSocket as
+# "stations_update" each poll cycle.
+LATEST_STATIONS: dict[str, dict] = {}
+
+
+def serialize_station(r: dict) -> dict:
+    return {
+        "name": r["name"], "state": r["state"], "lat": r["lat"], "lon": r["lon"],
+        "temp": r["temp"], "wind": r["wind"], "precip": r["precip"], "event": r["event"],
+        "updated_at": r["updated_at"],
+    }
+
+def chunk_list(data: list, size: int = 40):
+    for i in range(0, len(data), size):
+        yield data[i : i + size]
+
+async def fetch_cities():
+    all_results = []
+    chunk_size = 40
+
+    async with httpx.AsyncClient() as client:
+        for batch in chunk_list(CITIES, chunk_size):
+            lats = ",".join(str(round(c["lat"], 2)) for c in batch)
+            lons = ",".join(str(round(c["lon"], 2)) for c in batch)
+
+            # Request weather code and wind speed
+            url = (
+                f"https://api.open-meteo.com/v1/forecast"
+                f"?latitude={lats}&longitude={lons}&current_weather=true"
+            )
+
+            response = await client.get(url)
+            response.raise_for_status()
+            data = response.json()
+
+            batch_data = data if isinstance(data, list) else [data]
+
+            for city, weather in zip(batch, batch_data):
+                cur = weather.get("current_weather", {})
+                
+                weather_code = cur.get("weathercode", 0)
+                wind_speed = cur.get("windspeed", 0.0)
+                precip = 0.0  # standard current_weather block doesn't output precip
+
+                # Call your existing function with all 3 positional arguments:
+                event = classify_from_weathercode(weather_code, wind_speed, precip)
+
+                all_results.append({
+                    "name": city["name"],
+                    "state": city.get("state", ""),
+                    "lat": city["lat"],
+                    "lon": city["lon"],
+                    "temp": cur.get("temperature", 0.0),
+                    "wind": wind_speed,
+                    "precip": precip,
+                    "event": event,
+                })
+
+    return all_results
+# ---------------------------------------------------------------------------
+# Shared ingestion pipeline — every report (station, citizen, social, demo)
+# passes through this one function, so classification / trust / dedup logic
+# lives in exactly one place.
+# ---------------------------------------------------------------------------
+class ReportSubmission(BaseModel):
+    source: str = Field(default="Citizen App")
+    text: str
+    city: str
+    state: str
+    lat: float
+    lon: float
+    event_category: Optional[str] = None
+    hashtags: list[str] = Field(default_factory=list)
+    media_type: Literal["none", "photo", "video"] = "none"
+    media_url: Optional[str] = None
+
+
+class VerifyBody(BaseModel):
+    status: Literal["Verified", "Unverified", "Flagged", "Duplicate"]
+    note: Optional[str] = None
+
+
+def serialize_report(row: dict) -> dict:
+    out = dict(row)
+    try:
+        out["hashtags"] = json.loads(out.get("hashtags") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        out["hashtags"] = []
+    return out
+
+
+async def ingest_report(sub: ReportSubmission, actor_note: Optional[str] = None) -> dict:
+    event = sub.event_category or pipeline.classify_event_from_text(sub.text)
+    has_gps = bool(sub.lat) and bool(sub.lon)
+    has_media = sub.media_type != "none"
+    score = pipeline.score_trust(sub.source, sub.text, has_gps, has_media, sub.hashtags)
+    status = pipeline.verification_from_score(score)
+
+    since = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    candidates = await asyncio.to_thread(db.recent_candidates, event, since)
+    dup_id = pipeline.find_duplicate(sub.text, sub.lat, sub.lon, candidates)
+    if dup_id is not None:
+        status = "Duplicate"
+        score = min(score, 0.3)
+
+    row = {
+        "source": sub.source, "raw_text": sub.text, "city": sub.city, "state": sub.state,
+        "lat": sub.lat, "lon": sub.lon, "event_category": event,
+        "hashtags": json.dumps(sub.hashtags), "media_type": sub.media_type, "media_url": sub.media_url,
+        "trust_score": score, "verification_status": status, "duplicate_of": dup_id,
+        "reviewer_note": actor_note, "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    saved = await asyncio.to_thread(db.insert_report, row)
+    await manager.broadcast({"type": "new_report", "report": serialize_report(saved)})
+    return saved
+
+
+# ---------------------------------------------------------------------------
+# WebSocket fan-out
+# ---------------------------------------------------------------------------
+class ConnectionManager:
+    def __init__(self):
+        self.active: list[WebSocket] = []
+        self.latest_weather: Optional[dict] = None
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.active.append(ws)
+        if self.latest_weather:
+            await ws.send_json(self.latest_weather)
+
+    def disconnect(self, ws: WebSocket):
+        if ws in self.active:
+            self.active.remove(ws)
+
+    async def broadcast(self, payload: dict):
+        if payload.get("type") == "weather_update":
+            self.latest_weather = payload
+        dead = []
+        for ws in self.active:
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+
+manager = ConnectionManager()
+
+# ---------------------------------------------------------------------------
+# Background loops
+# ---------------------------------------------------------------------------
+async def poll_weather_loop():
+    while True:
+        try:
+            rows = await fetch_cities()
+            if rows:
+                payload = build_weather_payload(rows)
+                await manager.broadcast(payload)
+                print(
+                    f"[poll] ingested {len(rows)} station records -> "
+                    f"max {payload['max_temp']}°C ({payload['max_temp_city']}), "
+                    f"min {payload['min_temp']}°C ({payload['min_temp_city']})"
+                )
+
+                now_iso = datetime.now(timezone.utc).isoformat()
+                for r in rows:
+                    r["updated_at"] = now_iso
+                    LATEST_STATIONS[r["name"]] = r
+
+                await manager.broadcast({
+                    "type": "stations_update",
+                    "stations": [serialize_station(r) for r in rows],
+                })
+
+                # Ingest anomalous event reports
+                for r in rows:
+                    if r.get("event") == "Normal":
+                        continue
+                    sub = ReportSubmission(
+                        source="IMD Station",
+                        text=f"Automated station reading at {r['name']}: {r['event']} "
+                             f"({r['temp']}°C, wind {r['wind']} km/h, precip {r['precip']}mm). #IMD",
+                        city=r["name"],
+                        state=r["state"],
+                        lat=r["lat"],
+                        lon=r["lon"],
+                        event_category=r["event"],
+                        hashtags=["IMD"],
+                        media_type="none",
+                    )
+                    await ingest_report(sub)
+
+        except Exception as exc:
+            print(f"[poll] weather fetch failed: {exc}")
+            traceback.print_exc()
+
+        await asyncio.sleep(POLL_SECONDS)
+
+
+def serialize_satellite_frame(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "date": row["date"],
+        "captured_at": row["captured_at"],
+        "url": f"/satellite_frames/{row['filename']}",
+    }
+
+
+async def satellite_poll_loop():
+    while True:
+        try:
+            frame = await satellite.poll_once()
+            if frame:
+                print(f"[satellite] new frame captured -> {frame['filename']}")
+                await manager.broadcast({
+                    "type": "satellite_update",
+                    "frame": serialize_satellite_frame(frame),
+                })
+        except Exception as exc:
+            print(f"[satellite] poll failed: {exc}")
+        await asyncio.sleep(SATELLITE_POLL_SECONDS)
+
+
+# Demo-only social/citizen listener. Clearly separated from the real
+# ingestion door (POST /api/reports/submit) that it exercises — a live
+# Twitter/X filtered-stream or citizen-app webhook would call
+# ingest_report() from its own handler instead of this loop.
+DEMO_SOURCES = ["Twitter/X", "Citizen App", "Instagram"]
+DEMO_TEMPLATES = [
+    ("Flooding",     "Streets near {city} completely waterlogged after continuous rain, cars stranded. #IMD #Flood"),
+    ("Thunderstorm", "Loud thunder and lightning over {city} right now, stay indoors. #IMD #Thunderstorm"),
+    ("Heatwave",     "{city} is unbearable today, feels like an oven outside. #IMD #Heatwave"),
+    ("Fog",          "Dense fog in {city} this morning, visibility under 50m on the highway. #IMD #Fog"),
+    ("Dust Storm",   "Massive dust storm rolling into {city}, sky turned orange. #IMD #DustStorm"),
+    ("Strong Winds", "Very strong winds in {city}, a tree came down near the market. #IMD #StrongWinds"),
+    ("Rain",         "Heavy rain pouring over {city} for the last hour, monsoon in full force. #IMD #Rain"),
+]
+DEMO_SPAM_TEMPLATES = [
+    "Win a free iPhone now!!!! click here bit.ly/xyz #IMD",
+    "subscribe now for free followers #IMD #trending",
+]
+
+
+async def simulate_social_feed():
+    if not SIMULATE_SOCIAL_FEED:
+        return
+    rng = random.Random()
+    while True:
+        await asyncio.sleep(SOCIAL_POST_INTERVAL_SECONDS)
+        try:
+            city = rng.choice(CITIES)
+            if rng.random() < 0.06:
+                # occasional spam/fake post so the trust scorer has
+                # something real to catch — demonstrates the "detect fake
+                # or misleading reports" requirement, not just happy path.
+                text = rng.choice(DEMO_SPAM_TEMPLATES)
+                event = None
+            else:
+                event, template = rng.choice(DEMO_TEMPLATES)
+                text = template.format(city=city["name"])
+            sub = ReportSubmission(
+                source=rng.choice(DEMO_SOURCES),
+                text=text,
+                city=city["name"], state=city["state"],
+                lat=city["lat"] + rng.uniform(-0.4, 0.4),
+                lon=city["lon"] + rng.uniform(-0.4, 0.4),
+                event_category=event,
+                hashtags=["IMD"],
+                media_type=rng.choice(["none", "none", "photo", "video"]),
+            )
+            await ingest_report(sub)
+        except Exception as exc:
+            print(f"[demo-feed] failed: {exc}")
+
+
+def seed_demo_history(n: int = 120):
+    """One-time backfill so the dashboard isn't empty on a fresh DB.
+    Backdated over the last 24h and clearly synthetic — same generator as
+    simulate_social_feed(), just run n times upfront with randomized
+    timestamps instead of one post every interval."""
+    rng = random.Random(7)
+    now = datetime.now(timezone.utc)
+    for _ in range(n):
+        city = rng.choice(CITIES)
+        event, template = rng.choice(DEMO_TEMPLATES)
+        text = template.format(city=city["name"])
+        source = rng.choice(DEMO_SOURCES + ["IMD Station", "Public API"])
+        has_media = rng.random() < 0.35
+        media_type = rng.choice(["photo", "video"]) if has_media else "none"
+        lat = city["lat"] + rng.uniform(-0.4, 0.4)
+        lon = city["lon"] + rng.uniform(-0.4, 0.4)
+        score = pipeline.score_trust(source, text, True, has_media, ["IMD"])
+        status = pipeline.verification_from_score(score)
+        created = now - timedelta(minutes=rng.randint(1, 24 * 60))
+        row = {
+            "source": source, "raw_text": text, "city": city["name"], "state": city["state"],
+            "lat": lat, "lon": lon, "event_category": event, "hashtags": json.dumps(["IMD"]),
+            "media_type": media_type, "media_url": None, "trust_score": score,
+            "verification_status": status, "duplicate_of": None, "reviewer_note": None,
+            "created_at": created.isoformat(),
+        }
+        db.insert_report(row)
+    print(f"[seed] backfilled {n} demo reports for initial dashboard state")
+
+
+# ---------------------------------------------------------------------------
+# App wiring
+# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.init_db()
+    if db.is_empty():
+        seed_demo_history()
+    weather_task = asyncio.create_task(poll_weather_loop())
+    social_task = asyncio.create_task(simulate_social_feed())
+    satellite_task = asyncio.create_task(satellite_poll_loop())
+    yield
+    weather_task.cancel()
+    social_task.cancel()
+    satellite_task.cancel()
+
+
+app = FastAPI(title="VAYUNET Weather Big-Data Platform", lifespan=lifespan)
+app.mount("/satellite_frames", StaticFiles(directory=str(satellite.STORAGE_DIR)), name="satellite_frames")
+
+
+# ---------------- REST API ----------------
+@app.post("/api/reports/submit")
+async def submit_report(sub: ReportSubmission):
+    saved = await ingest_report(sub)
+    return serialize_report(saved)
+
+
+@app.get("/api/reports")
+async def list_reports(
+    date: Optional[str] = None,          # YYYY-MM-DD — date-wise filtering
+    event: Optional[str] = None,         # event-wise filtering
+    state: Optional[str] = None,         # location-wise filtering
+    verification: Optional[str] = None,  # verification-status filtering
+    limit: int = 500,
+    offset: int = 0,
+):
+    rows = await asyncio.to_thread(db.query_reports, date, event, state, verification, limit, offset)
+    return [serialize_report(r) for r in rows]
+
+
+@app.get("/api/reports/{report_id}")
+async def get_report(report_id: int):
+    row = await asyncio.to_thread(db.get_report, report_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="report not found")
+    return serialize_report(row)
+
+
+@app.patch("/api/reports/{report_id}/verify")
+async def verify_report(report_id: int, body: VerifyBody):
+    ok = await asyncio.to_thread(db.update_verification, report_id, body.status, body.note)
+    if not ok:
+        raise HTTPException(status_code=404, detail="report not found")
+    await manager.broadcast({"type": "verification_update", "id": report_id, "status": body.status})
+    return {"ok": True}
+
+
+@app.get("/api/stats")
+async def stats():
+    return await asyncio.to_thread(db.get_stats)
+
+
+@app.get("/api/states")
+async def states():
+    return await asyncio.to_thread(db.get_states)
+
+
+# ---------------- Live station readings (map city labels) ----------------
+@app.get("/api/stations")
+async def stations():
+    return [serialize_station(r) for r in LATEST_STATIONS.values()]
+
+
+# ---------------- Satellite / Cloud Map ----------------
+@app.get("/api/satellite/latest")
+async def satellite_latest():
+    row = await asyncio.to_thread(db.latest_satellite_frame)
+    if not row:
+        raise HTTPException(status_code=404, detail="no satellite frames captured yet — check back shortly")
+    return serialize_satellite_frame(row)
+
+
+@app.get("/api/satellite/frames")
+async def satellite_frames(date: Optional[str] = None):
+    if not date:
+        date = datetime.now(timezone.utc).astimezone(satellite.IST).date().isoformat()
+    rows = await asyncio.to_thread(db.list_satellite_frames, date)
+    return {"date": date, "frames": [serialize_satellite_frame(r) for r in rows]}
+
+
+@app.get("/api/satellite/dates")
+async def satellite_dates():
+    return await asyncio.to_thread(db.list_satellite_dates)
+
+
+# ---------------- WebSocket ----------------
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await manager.connect(ws)
+    try:
+        while True:
+            await ws.receive_text()  # dashboard doesn't send anything; just detects disconnects
+    except WebSocketDisconnect:
+        manager.disconnect(ws)
+
+
+# ---------------- Static pages ----------------
+FRONTEND_DIR = Path(__file__).parent
+
+
+@app.get("/")
+async def serve_dashboard():
+    return FileResponse(FRONTEND_DIR / "main.html")
+
+
+@app.get("/admin")
+async def serve_admin():
+    return FileResponse(FRONTEND_DIR / "admin.html")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)

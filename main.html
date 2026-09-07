@@ -1,0 +1,1274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+<title>IMD National Weather Intelligence Grid</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+
+<style>
+  :root{
+    --bg:#060a14;
+    --bg-panel:#0c1120;
+    --bg-card:#101830;
+    --border:#1e2740;
+    --text:#eef1fb;
+    --text-dim:#7c88ac;
+    --text-faint:#4c5878;
+    --cyan:#22d3ee;
+    --amber:#fb923c;
+    --blue:#3b82f6;
+    --violet:#a78bfa;
+    --green:#34d399;
+    --red:#f43f5e;
+    --grey:#94a3b8;
+    --dust:#d97706;
+    --font-display:'Space Grotesk', sans-serif;
+    --font-body:'Inter', sans-serif;
+    --font-mono:'JetBrains Mono', monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;}
+  body{
+    background:radial-gradient(ellipse at 20% -10%, #0b1730 0%, var(--bg) 55%);
+    color:var(--text);
+    font-family:var(--font-body);
+    height:100dvh;
+    display:flex;
+    flex-direction:column;
+    overflow:hidden;
+  }
+
+  /* ---------- HEADER ---------- */
+  header{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:12px 20px;
+    background:var(--bg-panel);
+    border-bottom:1px solid var(--border);
+    flex-shrink:0;
+    z-index:20;
+  }
+  .brand{display:flex;align-items:center;gap:10px;}
+  .brand-mark{
+    width:32px;height:32px;border-radius:8px;
+    background:linear-gradient(135deg, var(--cyan), var(--blue));
+    display:flex;align-items:center;justify-content:center;
+    flex-shrink:0;
+  }
+  .brand-mark svg{width:18px;height:18px;}
+  .brand h1{
+    font-family:var(--font-display);
+    font-size:1.05rem;font-weight:700;letter-spacing:0.3px;color:var(--text);
+    line-height:1.1;
+  }
+  .brand .tag{font-size:0.68rem;color:var(--text-dim);letter-spacing:0.4px;margin-top:1px;}
+  .live-status{
+    display:flex;align-items:center;gap:7px;
+    font-family:var(--font-mono);font-size:0.72rem;font-weight:500;
+    color:var(--green);background:rgba(52,211,153,0.1);
+    border:1px solid rgba(52,211,153,0.25);
+    padding:5px 11px;border-radius:20px;white-space:nowrap;
+  }
+  .pulse-dot{width:7px;height:7px;background:var(--green);border-radius:50%;animation:pulse 1.6s infinite;flex-shrink:0;}
+  @keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(52,211,153,.5);}50%{opacity:.4;box-shadow:0 0 0 5px rgba(52,211,153,0);}}
+
+  /* ---------- LAYOUT ---------- */
+  .dashboard-container{display:grid;grid-template-columns:266px 1fr 340px;flex:1;min-height:0;}
+  .panel{background:var(--bg-panel);padding:16px;border-right:1px solid var(--border);overflow-y:auto;}
+  .panel-right{border-right:none;border-left:1px solid var(--border);}
+  .panel-title{
+    font-family:var(--font-mono);font-size:0.68rem;color:var(--text-dim);
+    text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;
+    display:flex;align-items:center;gap:6px;
+  }
+  .panel-title::before{content:'';width:3px;height:12px;background:var(--cyan);border-radius:2px;}
+
+  /* ---------- KPI CARDS ---------- */
+  .metric-card{
+    background:var(--bg-card);border:1px solid var(--border);
+    padding:13px 14px;border-radius:10px;margin-bottom:10px;
+    position:relative;overflow:hidden;
+  }
+  .metric-card .icon{
+    position:absolute;top:12px;right:12px;width:16px;height:16px;color:var(--text-faint);
+  }
+  .metric-card label{font-size:0.68rem;color:var(--text-dim);display:block;margin-bottom:5px;letter-spacing:.2px;}
+  .metric-card .val{font-family:var(--font-mono);font-size:1.35rem;font-weight:700;color:var(--red);}
+  .metric-card .sub{font-size:0.74rem;color:var(--text-dim);margin-top:3px;}
+
+  /* ---------- MAP ---------- */
+  #map-container{position:relative;width:100%;height:100%;background:#04070f;}
+  #map{width:100%;height:100%;background:#04070f;}
+  .leaflet-container{background:#04070f;}
+  #wind-canvas{position:absolute;inset:0;pointer-events:none;z-index:450;}
+
+  .map-legend{
+    position:absolute;top:10px;left:10px;z-index:1000;
+    background:rgba(12,17,32,0.88);border:1px solid var(--border);
+    border-radius:8px;padding:9px 11px;backdrop-filter:blur(6px);
+    font-size:0.68rem;color:var(--text-dim);
+  }
+  .map-legend .row{display:flex;align-items:center;gap:6px;margin-top:4px;}
+  .map-legend .row:first-child{margin-top:0;}
+  .swatch{width:9px;height:9px;border-radius:2px;flex-shrink:0;}
+
+  .wind-toggle{
+    position:absolute;bottom:16px;left:10px;z-index:1000;
+    background:rgba(12,17,32,0.9);border:1px solid var(--border);
+    color:var(--text);font-family:var(--font-mono);font-size:0.68rem;
+    padding:7px 12px;border-radius:20px;display:flex;align-items:center;gap:6px;
+    cursor:pointer;backdrop-filter:blur(6px);
+  }
+  .wind-toggle .dot{width:6px;height:6px;border-radius:50%;background:var(--cyan);}
+  .wind-toggle.off .dot{background:var(--text-faint);}
+  .wind-toggle.off{color:var(--text-dim);}
+
+  .view-toggle{
+    position:absolute;bottom:16px;left:140px;z-index:1000;
+    background:rgba(12,17,32,0.9);border:1px solid var(--border);
+    border-radius:20px;display:flex;overflow:hidden;backdrop-filter:blur(6px);
+  }
+  .view-toggle button{
+    background:transparent;border:none;color:var(--text-dim);
+    font-family:var(--font-mono);font-size:0.68rem;padding:7px 12px;cursor:pointer;
+  }
+  .view-toggle button.active{color:var(--cyan);background:rgba(34,211,238,0.1);}
+
+  .map-mode-toggle{
+    position:absolute;top:16px;left:50%;transform:translateX(-50%);z-index:1001;
+    background:rgba(12,17,32,0.92);border:1px solid var(--border);
+    border-radius:20px;display:flex;overflow:hidden;backdrop-filter:blur(6px);
+  }
+  .map-mode-toggle button{
+    background:transparent;border:none;color:var(--text-dim);
+    font-family:var(--font-mono);font-size:0.7rem;font-weight:700;
+    padding:9px 18px;cursor:pointer;letter-spacing:.3px;
+  }
+  .map-mode-toggle button.active{color:var(--cyan);background:rgba(34,211,238,0.12);}
+
+  #cloud-map-panel{
+    position:absolute;inset:0;z-index:900;display:none;
+    background:#04070f;flex-direction:column;
+  }
+  #cloud-map-panel.active{display:flex;}
+  .cloud-map-frame{
+    flex:1;display:flex;align-items:center;justify-content:center;
+    overflow:hidden;position:relative;padding:56px 12px 8px;
+  }
+  .cloud-map-frame img{max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;display:none;}
+  .cloud-map-frame img.loaded{display:block;}
+  #sat-empty-state{text-align:center;color:var(--text-dim);max-width:340px;padding:0 20px;}
+  #sat-empty-state.hidden{display:none;}
+  #sat-empty-state p{font-size:0.78rem;margin-top:8px;line-height:1.5;}
+  #sat-empty-state .muted{color:var(--text-faint);font-size:0.7rem;}
+  .dot-spin{width:22px;height:22px;border-radius:50%;border:2px solid var(--border);border-top-color:var(--cyan);margin:0 auto 12px;animation:spin 1s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .cloud-map-caption{
+    display:flex;align-items:center;justify-content:center;gap:10px;
+    font-family:var(--font-mono);font-size:0.75rem;color:var(--text-dim);
+    padding:4px 16px;
+  }
+  .sat-live-tag{color:var(--green);font-size:0.65rem;}
+  .sat-live-tag.stale{color:var(--text-faint);}
+  .cloud-map-controls{
+    display:flex;align-items:center;gap:10px;padding:10px 20px 6px;
+  }
+  .cloud-map-controls button{
+    background:rgba(34,211,238,0.1);border:1px solid var(--cyan);color:var(--cyan);
+    width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:0.85rem;
+    display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  }
+  .cloud-map-controls button:disabled{opacity:0.35;cursor:default;}
+  .cloud-map-controls input[type=range]{flex:1;accent-color:var(--cyan);}
+  .cloud-map-controls .muted{font-family:var(--font-mono);font-size:0.68rem;color:var(--text-dim);white-space:nowrap;}
+  .cloud-map-note{text-align:center;font-size:0.66rem;color:var(--text-faint);padding:2px 16px 14px;}
+
+  .area-label{
+    text-align:center;pointer-events:none;transform:translate(-50%,-50%);
+    text-shadow:0 1px 3px rgba(0,0,0,0.95),0 0 8px rgba(0,0,0,0.7);
+    white-space:nowrap;
+  }
+  .area-label .name{
+    font-family:var(--font-mono);color:var(--text-dim);letter-spacing:.3px;
+    font-size:0.64rem;
+  }
+  .area-label .temp{
+    font-family:var(--font-mono);font-weight:700;color:var(--text);
+    font-size:0.85rem;line-height:1.15;
+  }
+  .area-label.state .name{font-size:0.72rem;color:#c7cee6;}
+  .area-label.state .temp{font-size:1.05rem;color:var(--cyan);}
+  .area-label.city .temp{color:var(--cyan);}
+
+  .filter-bar{
+    position:absolute;top:10px;right:10px;z-index:1000;
+    display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:60%;
+  }
+  .filter-pill{
+    background:rgba(12,17,32,0.9);border:1px solid var(--border);color:var(--text-dim);
+    font-family:var(--font-mono);font-size:0.68rem;padding:6px 10px;border-radius:20px;
+    backdrop-filter:blur(6px);cursor:pointer;white-space:nowrap;
+  }
+  .filter-pill.active{border-color:var(--cyan);color:var(--cyan);background:rgba(34,211,238,0.08);}
+
+  /* ---------- RIGHT PANEL: FILTERS + FEED ---------- */
+  .filter-group{margin-bottom:18px;}
+  .filter-group .fg-label{font-size:0.68rem;color:var(--text-dim);margin-bottom:8px;letter-spacing:.3px;}
+  .filters-toggle{cursor:pointer;justify-content:flex-start;user-select:none;}
+  .filters-toggle .pt-label{flex-shrink:0;}
+  .filters-badge{
+    font-family:var(--font-mono);font-size:0.62rem;color:var(--cyan);
+    background:rgba(34,211,238,0.1);border:1px solid rgba(34,211,238,0.3);
+    padding:1px 7px;border-radius:10px;margin-left:6px;
+  }
+  .filters-toggle .chevron{width:13px;height:13px;color:var(--text-dim);margin-left:auto;transition:transform .2s;flex-shrink:0;}
+  .filters-toggle.open .chevron{transform:rotate(180deg);}
+  .filter-body{overflow:hidden;max-height:640px;opacity:1;transition:max-height .25s ease, opacity .2s ease, margin .2s ease;}
+  .filter-body.collapsed{max-height:0;opacity:0;}
+  .chip-row{display:flex;flex-wrap:wrap;gap:6px;}
+  .chip{
+    font-family:var(--font-mono);font-size:0.68rem;color:var(--text-dim);
+    background:var(--bg-card);border:1px solid var(--border);
+    padding:5px 9px;border-radius:16px;cursor:pointer;transition:.15s;
+  }
+  .chip.active{border-color:var(--cyan);color:var(--cyan);background:rgba(34,211,238,0.08);}
+  select.state-select, input.date-input{
+    width:100%;background:var(--bg-card);border:1px solid var(--border);color:var(--text);
+    padding:8px 10px;border-radius:8px;font-family:var(--font-body);font-size:0.8rem;
+  }
+  .filter-note{font-size:0.66rem;color:var(--text-faint);margin-top:6px;line-height:1.4;}
+  .match-counter{
+    font-family:var(--font-mono);font-size:0.72rem;color:var(--text-dim);
+    padding:8px 0;border-top:1px dashed var(--border);border-bottom:1px dashed var(--border);
+    margin-bottom:16px;display:flex;justify-content:space-between;
+  }
+  .match-counter b{color:var(--cyan);}
+
+  #inspector-placeholder{color:var(--text-faint);font-size:0.82rem;margin-top:14px;text-align:center;line-height:1.5;}
+  #inspector-content{display:none;}
+  #selected-region-name{font-family:var(--font-display);color:var(--cyan);font-size:1.15rem;margin-bottom:2px;}
+  #selected-parent{color:var(--text-dim);font-size:0.78rem;margin-bottom:14px;}
+  .status-row{display:flex;align-items:center;justify-content:space-between;}
+  .stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0 4px;}
+  .stat-box{background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 6px;text-align:center;}
+  .stat-box label{display:block;font-size:0.63rem;color:var(--text-dim);margin-bottom:4px;}
+  .stat-box .stat-val{font-family:var(--font-mono);font-size:0.92rem;font-weight:700;color:var(--text);}
+  .verify-tag{font-family:var(--font-mono);font-size:0.65rem;padding:2px 8px;border-radius:10px;}
+  .verify-tag.Verified{color:var(--green);background:rgba(52,211,153,.12);}
+  .verify-tag.Unverified{color:var(--amber);background:rgba(251,146,60,.12);}
+  .verify-tag.Flagged{color:var(--red);background:rgba(244,63,94,.12);}
+
+  .feed-card{
+    background:var(--bg-card);border-left:3px solid var(--cyan);padding:11px 12px;
+    margin-bottom:10px;border-radius:6px;font-size:0.82rem;line-height:1.4;
+  }
+  .feed-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
+  .trust-badge{font-family:var(--font-mono);font-size:0.63rem;padding:2px 7px;border-radius:3px;background:#132a1e;color:var(--green);}
+  .feed-actions{display:flex;gap:6px;margin-top:8px;}
+  .feed-actions button{
+    flex:1;font-family:var(--font-mono);font-size:0.65rem;padding:5px 0;border-radius:5px;
+    border:1px solid var(--border);background:transparent;color:var(--text-dim);cursor:pointer;
+  }
+  .feed-actions button.verify-btn:hover{border-color:var(--green);color:var(--green);}
+  .feed-actions button.flag-btn:hover{border-color:var(--red);color:var(--red);}
+
+  /* ---------- SCROLLBARS ---------- */
+  .panel::-webkit-scrollbar{width:6px;}
+  .panel::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
+
+  /* ---------- MOBILE ---------- */
+  .mobile-tabbar{display:none;}
+  @media (max-width: 880px){
+    header{padding:10px 14px;}
+    .brand h1{font-size:0.92rem;}
+    .brand .tag{display:none;}
+    .live-status span{display:none;}
+    .live-status{padding:6px 8px;}
+
+    .dashboard-container{grid-template-columns:1fr;grid-template-rows:1fr;position:relative;}
+    .panel{
+      position:absolute;inset:0;z-index:30;border:none;
+      padding:14px 14px 76px 14px;
+      display:none;
+    }
+    .panel.mobile-active{display:block;}
+    #map-container{position:absolute;inset:0;z-index:10;}
+    #map-container.mobile-active{display:block;}
+    #map-container:not(.mobile-active){display:none;}
+
+    .kpi-strip{display:flex;gap:8px;overflow-x:auto;padding-bottom:2px;}
+    .kpi-strip .metric-card{min-width:150px;flex-shrink:0;margin-bottom:0;}
+
+    .mobile-tabbar{
+      display:flex;position:absolute;bottom:0;left:0;right:0;z-index:50;
+      background:var(--bg-panel);border-top:1px solid var(--border);
+      padding:8px 10px calc(8px + env(safe-area-inset-bottom));gap:6px;
+    }
+    .mobile-tabbar button{
+      flex:1;background:transparent;border:none;color:var(--text-dim);
+      font-family:var(--font-mono);font-size:0.68rem;padding:8px 0;border-radius:8px;
+      display:flex;flex-direction:column;align-items:center;gap:3px;
+    }
+    .mobile-tabbar button.active{color:var(--cyan);background:rgba(34,211,238,0.08);}
+    .mobile-tabbar svg{width:16px;height:16px;}
+    .filter-bar{max-width:none;top:auto;bottom:16px;right:10px;}
+    .map-legend{font-size:0.62rem;padding:7px 9px;}
+    .view-toggle{left:10px;bottom:56px;}
+    .wind-toggle{bottom:10px;}
+  }
+  @media (min-width:881px){ .mobile-tabbar{display:none !important;} }
+
+  svg .icon-stroke{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="brand-mark">
+      <svg viewBox="0 0 24 24"><path class="icon-stroke" stroke="#04101a" d="M3 12c3 0 3-4 6-4s3 4 6 4 3-4 6-4M3 18c3 0 3-4 6-4s3 4 6 4 3-4 6-4"/></svg>
+    </div>
+    <div>
+      <h1>Minecodex</h1>
+      <div class="tag">IMD Big-Data Weather Intelligence Grid · India</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <a href="/admin" style="font-family:var(--font-mono);font-size:0.72rem;color:var(--text-dim);text-decoration:none;border:1px solid var(--border);padding:6px 12px;border-radius:20px;white-space:nowrap;">Admin Panel</a>
+    <div class="live-status">
+      <div class="pulse-dot"></div>
+      <span id="live-label">ACTIVE</span>
+    </div>
+  </div>
+</header>
+
+<div class="dashboard-container">
+
+  <!-- LEFT: NATIONAL SUMMARY -->
+  <div class="panel mobile-active" id="panel-left">
+    <div class="panel-title">Highlights</div>
+    <div class="kpi-strip">
+      <div class="metric-card">
+        <svg class="icon" viewBox="0 0 24 24"><path class="icon-stroke" d="M12 3v10.5a3.5 3.5 0 1 1-3 0V3z"/><path class="icon-stroke" d="M9 6h3"/></svg>
+        <label>Highest Recorded Temp</label>
+        <div class="val" id="max-temp">– °C</div>
+        <div class="sub" id="max-temp-loc">Waiting for feed…</div>
+      </div>
+      <div class="metric-card">
+        <svg class="icon" viewBox="0 0 24 24"><path class="icon-stroke" d="M12 3v10.5a3.5 3.5 0 1 1-3 0V3z"/></svg>
+        <label>Lowest Recorded Temp</label>
+        <div class="val" style="color:var(--cyan);" id="min-temp">– °C</div>
+        <div class="sub" id="min-temp-loc">Waiting for feed…</div>
+      </div>
+      <div class="metric-card">
+        <svg class="icon" viewBox="0 0 24 24"><path class="icon-stroke" d="M12 2.5s6 6.5 6 10.8a6 6 0 1 1-12 0C6 9 12 2.5 12 2.5z"/></svg>
+        <label>Highest Rainfall Rate</label>
+        <div class="val" style="color:var(--blue);" id="latest-rain">– mm/hr</div>
+        <div class="sub" id="rain-loc">Waiting for feed…</div>
+      </div>
+      <div class="metric-card">
+        <svg class="icon" viewBox="0 0 24 24"><path class="icon-stroke" d="M4 8l8-5 8 5M6 10v9h12v-9M10 19v-5h4v5"/></svg>
+        <label>Ingestion Rate</label>
+        <div class="val" style="color:var(--green);" id="ingest-rate">– / min</div>
+        <div class="sub" id="ingest-sub">Connecting to backend…</div>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- CENTER: MAP -->
+  <div id="map-container" class="mobile-active">
+    <div class="map-mode-toggle">
+      <button id="mode-reports-btn" class="active">LIVE REPORTS</button>
+      <button id="mode-cloud-btn">CLOUD MAP</button>
+    </div>
+    <div class="map-legend">
+      <div class="row" style="margin-bottom:6px;font-family:var(--font-mono);color:var(--text);">EVENT KEY</div>
+      <div class="row"><span class="swatch" style="background:#3b82f6"></span>Rain</div>
+      <div class="row"><span class="swatch" style="background:#f43f5e"></span>Heatwave</div>
+      <div class="row"><span class="swatch" style="background:#a78bfa"></span>Thunderstorm</div>
+      <div class="row"><span class="swatch" style="background:#0ea5e9"></span>Flooding</div>
+      <div class="row"><span class="swatch" style="background:#94a3b8"></span>Fog</div>
+      <div class="row"><span class="swatch" style="background:#d97706"></span>Dust Storm</div>
+      <div class="row"><span class="swatch" style="background:#22d3ee"></span>Strong Winds</div>
+    </div>
+    <div class="filter-bar" id="quick-filter-bar"></div>
+    <div id="map"></div>
+    <canvas id="wind-canvas"></canvas>
+    <div class="wind-toggle" id="wind-toggle">
+      <span class="dot"></span> WIND FIELD
+    </div>
+    <div class="view-toggle">
+      <button id="view-points-btn" class="active">POINTS</button>
+      <button id="view-heat-btn">HEATMAP</button>
+    </div>
+
+    <div id="cloud-map-panel">
+      <div class="cloud-map-frame">
+        <img id="sat-image" alt="INSAT-3DS visible satellite imagery">
+        <div id="sat-empty-state">
+          <div class="dot-spin"></div>
+          <p>No satellite frames captured yet.</p>
+          <p class="muted">VAYUNET checks IMD's live INSAT-3DS feed every few minutes — the first frame usually lands within a few minutes of the server starting.</p>
+        </div>
+      </div>
+      <div class="cloud-map-caption">
+        <span id="sat-caption-text">Waiting for first frame…</span>
+        <span id="sat-live-tag" class="sat-live-tag">● LIVE</span>
+      </div>
+      <div class="cloud-map-controls">
+        <button id="sat-play-btn" title="Play timelapse">▶</button>
+        <input type="range" id="sat-scrubber" min="0" max="0" value="0" step="1" disabled>
+        <span id="sat-frame-label" class="muted">0 / 0</span>
+      </div>
+      <div class="cloud-map-note">Timelapse plays back today's saved INSAT-3DS visible frames (IST). Source: IMD.</div>
+    </div>
+  </div>
+
+
+  <!-- RIGHT: FILTERS + INSPECTOR -->
+  <div class="panel panel-right" id="panel-right">
+    <div class="panel-title filters-toggle" id="filters-toggle">
+      <span class="pt-label">Filters</span>
+      <span class="filters-badge" id="filters-badge">All</span>
+      <svg class="chevron" id="filters-chevron" viewBox="0 0 24 24"><path class="icon-stroke" d="M6 9l6 6 6-6"/></svg>
+    </div>
+
+    <div class="filter-body collapsed" id="filters-body">
+      <div class="filter-group">
+        <div class="fg-label">Date</div>
+        <input type="date" class="date-input" id="date-filter">
+        <div class="filter-note">Filters reports by day. Leave blank for the live rolling snapshot.</div>
+      </div>
+
+      <div class="filter-group">
+        <div class="fg-label">Event Type</div>
+        <div class="chip-row" id="event-chip-row"></div>
+      </div>
+
+      <div class="filter-group">
+        <div class="fg-label">State / Location</div>
+        <select class="state-select" id="state-filter"><option value="All">All States</option></select>
+      </div>
+
+      <div class="filter-group" style="margin-bottom:8px;">
+        <div class="fg-label">Verification Status</div>
+        <div class="chip-row" id="verify-chip-row"></div>
+      </div>
+    </div>
+
+    <div class="match-counter">
+      <span>Districts matching filters</span>
+      <span><b id="match-count">–</b>&nbsp;/&nbsp;<span id="total-count">–</span></span>
+    </div>
+
+    <div class="panel-title">District / Patch Inspector</div>
+    <div id="inspector-placeholder">Tap or click any district on the map to load its localized weather feed and verification status.</div>
+
+
+    <div id="inspector-content">
+      <h2 id="selected-region-name">–</h2>
+      <div id="selected-parent">–</div>
+
+      <div class="metric-card">
+        <div class="status-row">
+          <div>
+            <label>Current Status</label>
+            <div class="val" id="selected-status" style="color:var(--amber);font-size:1.05rem;">–</div>
+          </div>
+          <span class="verify-tag" id="selected-verify">–</span>
+        </div>
+      </div>
+
+      <div class="stat-grid">
+        <div class="stat-box"><label>Temp</label><div class="stat-val" id="selected-temp">–</div></div>
+        <div class="stat-box"><label>Wind</label><div class="stat-val" id="selected-wind">–</div></div>
+        <div class="stat-box"><label>Humidity</label><div class="stat-val" id="selected-humidity">–</div></div>
+      </div>
+
+      <div class="panel-title" style="margin-top:18px;">AI-Verified Citizen Feed</div>
+      <div id="feed-stream"></div>
+    </div>
+  </div>
+</div>
+
+<div class="mobile-tabbar">
+  <button class="tab-btn active" data-tab="map">
+    <svg viewBox="0 0 24 24"><path class="icon-stroke" d="M9 20l-6-2V4l6 2m0 14l6-2m-6 2V6m6 12l6 2V6l-6-2m0 16V4m0 2L9 4"/></svg>
+    Map
+  </button>
+  <button class="tab-btn" data-tab="left">
+    <svg viewBox="0 0 24 24"><path class="icon-stroke" d="M4 19V10M10 19V5M16 19v-7M20 19V13"/></svg>
+    Summary
+  </button>
+  <button class="tab-btn" data-tab="right">
+    <svg viewBox="0 0 24 24"><path class="icon-stroke" d="M4 6h16M4 12h10M4 18h6"/></svg>
+    Filters &amp; Feed
+  </button>
+</div>
+
+<script>
+/* ============================================================
+   0. INDIA-ONLY MAP SETUP
+============================================================ */
+const INDIA_BOUNDS = L.latLngBounds([6.0, 67.5], [37.6, 98.5]);
+const map = L.map('map', {
+  zoomControl:false,
+  maxBounds: INDIA_BOUNDS.pad(0.15),
+  maxBoundsViscosity: 1.0,
+  minZoom: 4,
+  maxZoom: 11
+}).fitBounds(INDIA_BOUNDS);
+L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+  attribution: 'Tiles &copy; Esri', maxZoom: 12
+}).addTo(map);
+
+let clusterGroup = null;
+let heatLayer = null;
+let selectedLayer = null;
+
+/* ============================================================
+   1b. LIVE AREA TEMPERATURE LABELS — zoom-tiered, no pins: zoomed out
+       shows one averaged label per state (centered on that state's
+       station cluster); zooming into a state switches to one label per
+       individual city. Both are plain text — name on top, temp below —
+       no marker dot/pointer.
+============================================================ */
+map.createPane('areaLabelPane');
+map.getPane('areaLabelPane').style.zIndex = 650;
+map.getPane('areaLabelPane').style.pointerEvents = 'none';
+const areaLabelLayer = L.layerGroup().addTo(map);
+let STATIONS = [];
+
+const STATE_ZOOM_MAX = 6; // zoom <= this: one aggregated label per state.
+                            // zoom > this: one label per individual city.
+
+function stateAggregates(){
+  const byState = {};
+  STATIONS.forEach(s => {
+    if (!byState[s.state]) byState[s.state] = { name: s.state, lat: 0, lon: 0, temp: 0, n: 0 };
+    const g = byState[s.state];
+    g.lat += s.lat; g.lon += s.lon; g.temp += s.temp; g.n += 1;
+  });
+  return Object.values(byState).map(g => ({ name: g.name, lat: g.lat/g.n, lon: g.lon/g.n, temp: g.temp/g.n }));
+}
+
+function areaIcon(name, temp, tier){
+  return L.divIcon({
+    className: 'area-label ' + tier,
+    html: `<div class="name">${name}</div><div class="temp">${Math.round(temp)}°C</div>`,
+    iconSize: [0, 0]
+  });
+}
+
+function renderAreaLabels(){
+  areaLabelLayer.clearLayers();
+  if (!STATIONS.length) return;
+  const zoomedOut = map.getZoom() <= STATE_ZOOM_MAX;
+  const points = zoomedOut ? stateAggregates() : STATIONS;
+  const tier = zoomedOut ? 'state' : 'city';
+  points.forEach(p => {
+    L.marker([p.lat, p.lon], {
+      icon: areaIcon(p.name, p.temp, tier), pane: 'areaLabelPane', interactive: false
+    }).addTo(areaLabelLayer);
+  });
+}
+
+async function loadStations(){
+  try {
+    STATIONS = await (await fetch('/api/stations')).json();
+    renderAreaLabels();
+  } catch (e) { /* backend not reachable yet */ }
+}
+
+map.on('zoomend', renderAreaLabels);
+let currentViewMode = 'points'; // 'points' | 'heatmap'
+let filteredReports = [];
+
+const EVENT_TYPES = ["Rain","Heatwave","Thunderstorm","Flooding","Fog","Dust Storm","Strong Winds","Normal"];
+const EVENT_COLORS = {
+  "Rain":"#3b82f6","Heatwave":"#f43f5e","Thunderstorm":"#a78bfa","Flooding":"#0ea5e9",
+  "Fog":"#94a3b8","Dust Storm":"#d97706","Strong Winds":"#22d3ee","Normal":"#28324c"
+};
+
+/* ============================================================
+   1. CITIZEN REPORTS — discrete points instead of a district
+      choropleth. District polygons force an even color fill onto
+      every polygon regardless of how much real data backs it (a huge
+      desert district reads the same "weight" as a small dense one),
+      and the underlying data here — individual tagged posts with
+      GPS, timestamp, photo/video, source, verification — is
+      point-shaped to begin with. Clustering + a density heatmap are
+      the standard treatment for this kind of crowd-report data
+      (used by Ushahidi, GDACS, etc).
+============================================================ */
+/* ============================================================
+   1a. LIVE BACKEND DATA — reports are fetched from and pushed by
+       the FastAPI/SQLite backend (backend.py + db.py + pipeline.py),
+       not generated client-side. Each report already carries a
+       verification_status and trust_score computed server-side by
+       the classification/trust-scoring/dedup pipeline.
+============================================================ */
+let ALL_REPORTS = [];
+
+function minutesAgo(iso){
+  const ms = Date.now() - new Date(iso).getTime();
+  return Math.max(0, Math.round(ms / 60000));
+}
+
+// Map a backend report row onto the shape the existing renderer/inspector
+// code below already expects (lat/lng, verification, confidence, ...).
+function fromApiReport(r){
+  return {
+    id: r.id,
+    lat: r.lat,
+    lng: r.lon,
+    city: r.city,
+    state: r.state,
+    event: r.event_category,
+    verification: r.verification_status,
+    confidence: Number(r.trust_score).toFixed(2),
+    minutesAgo: minutesAgo(r.created_at),
+    source: r.source,
+    media: r.media_type && r.media_type !== 'none'
+      ? (r.media_type === 'photo' ? 'Photo attached' : 'Video attached')
+      : 'No media',
+    text: r.raw_text,
+    duplicate_of: r.duplicate_of
+  };
+}
+
+async function loadStates(){
+  try {
+    const states = await (await fetch('/api/states')).json();
+    const sel = document.getElementById('state-filter');
+    states.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s; opt.textContent = s;
+      sel.appendChild(opt);
+    });
+  } catch (e) { /* backend not reachable yet — filter stays "All States" */ }
+}
+
+async function loadReports(){
+  const params = new URLSearchParams();
+  if (filters.event !== 'All') params.set('event', filters.event);
+  if (filters.state !== 'All') params.set('state', filters.state);
+  if (filters.verify !== 'All') params.set('verification', filters.verify);
+  if (filters.date) params.set('date', filters.date);
+  params.set('limit', '600');
+  try {
+    const rows = await (await fetch('/api/reports?' + params.toString())).json();
+    ALL_REPORTS = rows.map(fromApiReport);
+  } catch (e) {
+    ALL_REPORTS = [];
+  }
+  renderReports();
+}
+
+/* ============================================================
+   2. FILTER STATE
+============================================================ */
+const filters = { event: "All", verify: "All", state: "All", date: null };
+
+document.getElementById('date-filter').onchange = (e) => {
+  filters.date = e.target.value || null;
+  applyFilters();
+};
+
+const eventChipRow = document.getElementById('event-chip-row');
+["All", ...EVENT_TYPES].forEach(ev => {
+  const c = document.createElement('div');
+  c.className = 'chip' + (ev === 'All' ? ' active' : '');
+  c.textContent = ev;
+  c.onclick = () => { filters.event = ev; syncChips(eventChipRow, c); applyFilters(); };
+  eventChipRow.appendChild(c);
+});
+
+const verifyChipRow = document.getElementById('verify-chip-row');
+["All","Verified","Unverified","Flagged"].forEach(v => {
+  const c = document.createElement('div');
+  c.className = 'chip' + (v === 'All' ? ' active' : '');
+  c.textContent = v;
+  c.onclick = () => { filters.verify = v; syncChips(verifyChipRow, c); applyFilters(); };
+  verifyChipRow.appendChild(c);
+});
+
+// Quick pills mirrored on the map itself (event only, for fast access)
+const quickBar = document.getElementById('quick-filter-bar');
+["All","Heatwave","Rain","Thunderstorm"].forEach(ev => {
+  const p = document.createElement('div');
+  p.className = 'filter-pill' + (ev === 'All' ? ' active' : '');
+  p.textContent = ev;
+  p.onclick = () => {
+    filters.event = ev;
+    document.querySelectorAll('#event-chip-row .chip').forEach(c => c.classList.toggle('active', c.textContent === ev));
+    document.querySelectorAll('#quick-filter-bar .filter-pill').forEach(q => q.classList.toggle('active', q === p));
+    applyFilters();
+  };
+  quickBar.appendChild(p);
+});
+
+function syncChips(row, active){
+  row.querySelectorAll('.chip').forEach(c => c.classList.toggle('active', c === active));
+  quickBar.querySelectorAll('.filter-pill').forEach(q => q.classList.toggle('active', q.textContent === filters.event));
+}
+
+const stateSelect = document.getElementById('state-filter');
+stateSelect.onchange = async () => {
+  filters.state = stateSelect.value;
+  await loadReports();
+  focusOnState(stateSelect.value);
+  if (window.innerWidth <= 880) switchTab('map');
+};
+
+function focusOnState(stateName){
+  if (stateName === 'All'){
+    map.flyToBounds(INDIA_BOUNDS, { padding: [20,20], duration: 0.8 });
+    return;
+  }
+  const pts = ALL_REPORTS.filter(r => r.state === stateName).map(r => [r.lat, r.lng]);
+  if (!pts.length) return;
+  map.flyToBounds(L.latLngBounds(pts), { padding: [40,40], maxZoom: 8, duration: 0.9 });
+}
+// swap out generic "confirm the report matches its own filters" — the
+// backend already applies event/state/verification/date filtering in
+// /api/reports, so ALL_REPORTS is the already-filtered set by the time
+// it reaches the renderer.
+
+// Collapsible filters — collapsed by default so the inspector/feed below
+// is visible without scrolling; badge shows what's active at a glance.
+const filtersToggle = document.getElementById('filters-toggle');
+const filtersBody = document.getElementById('filters-body');
+filtersToggle.onclick = () => {
+  const collapsed = filtersBody.classList.toggle('collapsed');
+  filtersToggle.classList.toggle('open', !collapsed);
+};
+function updateFiltersBadge(){
+  const active = [filters.event, filters.verify, filters.state].filter(v => v !== 'All').length;
+  document.getElementById('filters-badge').textContent = active === 0 ? 'All' : `${active} active`;
+}
+
+/* ============================================================
+   3. CLUSTERED MARKERS + DENSITY HEATMAP
+============================================================ */
+clusterGroup = L.markerClusterGroup({
+  showCoverageOnHover: false,
+  spiderfyOnMaxZoom: true,
+  maxClusterRadius: 55,
+  iconCreateFunction: cluster => {
+    const children = cluster.getAllChildMarkers();
+    const counts = {};
+    children.forEach(m => { const ev = m.reportData.event; counts[ev] = (counts[ev]||0) + 1; });
+    const dominant = Object.entries(counts).sort((a,b) => b[1]-a[1])[0][0];
+    const color = EVENT_COLORS[dominant] || '#22d3ee';
+    const n = children.length;
+    const size = n < 10 ? 32 : n < 40 ? 42 : 54;
+    return L.divIcon({
+      html: `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};opacity:0.88;border:2px solid rgba(255,255,255,0.8);display:flex;align-items:center;justify-content:center;color:#04101a;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:${size>40?'13px':'11px'};box-shadow:0 0 14px ${color}99;">${n}</div>`,
+      className: '',
+      iconSize: [size, size]
+    });
+  }
+}).addTo(map);
+
+function renderReports(){
+  // ALL_REPORTS already reflects the active filters — loadReports() re-fetches
+  // /api/reports with the current event/state/verification/date query params
+  // whenever a filter changes, instead of filtering client-side.
+  filteredReports = ALL_REPORTS;
+
+  clusterGroup.clearLayers();
+  if (currentViewMode === 'points'){
+    filteredReports.forEach(r => {
+      const marker = L.circleMarker([r.lat, r.lng], {
+        radius: 5 + parseFloat(r.confidence) * 5,
+        color: '#0b0f1a',
+        weight: 1,
+        fillColor: EVENT_COLORS[r.event],
+        fillOpacity: 0.88
+      });
+      marker.reportData = r;
+      marker.on('click', () => selectReport(r, marker));
+      clusterGroup.addLayer(marker);
+    });
+    if (!map.hasLayer(clusterGroup)) map.addLayer(clusterGroup);
+  } else if (map.hasLayer(clusterGroup)) {
+    map.removeLayer(clusterGroup);
+  }
+
+  if (heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
+  if (currentViewMode === 'heatmap'){
+    const pts = filteredReports.map(r => [r.lat, r.lng, 0.4 + parseFloat(r.confidence) * 0.6]);
+    heatLayer = L.heatLayer(pts, {
+      radius: 24, blur: 28, maxZoom: 9,
+      gradient: { 0.2:'#22d3ee', 0.5:'#3b82f6', 0.75:'#fb923c', 1:'#f43f5e' }
+    }).addTo(map);
+  }
+
+  document.getElementById('match-count').textContent = filteredReports.length;
+  updateFiltersBadge();
+}
+
+let TOTAL_REPORTS = 0;
+async function loadStats(){
+  try {
+    const s = await (await fetch('/api/stats')).json();
+    TOTAL_REPORTS = s.total;
+    document.getElementById('total-count').textContent = TOTAL_REPORTS;
+  } catch (e) { /* backend not reachable yet */ }
+}
+
+function applyFilters(){ loadReports(); }
+
+function selectReport(r, marker){
+  if (selectedLayer && selectedLayer.setStyle) selectedLayer.setStyle({ weight: 1, color: '#0b0f1a' });
+  selectedLayer = marker;
+  if (marker.setStyle) marker.setStyle({ weight: 2.5, color: '#ffffff' });
+  map.flyTo([r.lat, r.lng], Math.max(map.getZoom(), 8), { duration: 0.7 });
+
+  document.getElementById('inspector-placeholder').style.display = 'none';
+  document.getElementById('inspector-content').style.display = 'block';
+  document.getElementById('selected-region-name').innerText = r.city;
+  document.getElementById('selected-parent').innerText = r.state + ' · India';
+  document.getElementById('selected-status').innerText = r.event;
+  document.getElementById('selected-temp').innerText = r.minutesAgo < 1 ? 'Just now' : `${r.minutesAgo} min ago`;
+  document.getElementById('selected-wind').innerText = r.source;
+  document.getElementById('selected-humidity').innerText = r.media;
+  const vt = document.getElementById('selected-verify');
+  vt.textContent = r.verification;
+  vt.className = 'verify-tag ' + r.verification;
+
+  document.getElementById('feed-stream').innerHTML = `
+    <div class="feed-card">
+      <div class="feed-top">
+        <span class="trust-badge">Trust score ${r.confidence}</span>
+        <span class="verify-tag ${r.verification}">${r.verification}</span>
+      </div>
+      <p>${r.text ? r.text : `${r.source} report flags <b>${r.event}</b> activity near ${r.city}, ${r.state}${r.media !== 'No media' ? ' · ' + r.media : ''}. #IMD #${r.event.replace(/\s+/g,'')}`}</p>
+      ${r.duplicate_of ? `<div class="filter-note">Flagged as a likely duplicate of report #${r.duplicate_of}.</div>` : ''}
+      <div class="feed-actions">
+        <button class="verify-btn" onclick="setReportVerification(${r.id}, 'Verified', this)">✓ Confirm</button>
+        <button class="flag-btn" onclick="setReportVerification(${r.id}, 'Flagged', this)">⚑ Flag</button>
+      </div>
+    </div>`;
+
+  if (window.innerWidth <= 880) switchTab('right');
+}
+
+// Admin-lite action straight from the citizen-feed inspector card — full
+// moderation queue with audit notes lives on the /admin panel.
+async function setReportVerification(id, status, btn){
+  btn.disabled = true;
+  try {
+    await fetch(`/api/reports/${id}/verify`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, note: 'Reviewed from dashboard feed card' })
+    });
+    const r = ALL_REPORTS.find(x => x.id === id);
+    if (r){
+      r.verification = status;
+      const vt = document.getElementById('selected-verify');
+      if (vt) { vt.textContent = status; vt.className = 'verify-tag ' + status; }
+    }
+  } catch (e) { /* silently ignore — backend unreachable */ }
+  finally { btn.disabled = false; }
+}
+
+document.getElementById('view-points-btn').onclick = () => setViewMode('points');
+document.getElementById('view-heat-btn').onclick = () => setViewMode('heatmap');
+function setViewMode(mode){
+  currentViewMode = mode;
+  document.getElementById('view-points-btn').classList.toggle('active', mode === 'points');
+  document.getElementById('view-heat-btn').classList.toggle('active', mode === 'heatmap');
+  renderReports();
+}
+
+loadStates();
+loadReports();
+loadStats();
+loadStations();
+
+/* ============================================================
+   3. PER-AREA ANIMATED WIND FIELD (canvas overlay on the map)
+============================================================ */
+const windCanvas = document.getElementById('wind-canvas');
+const wctx = windCanvas.getContext('2d');
+const mapContainer = document.getElementById('map-container');
+
+// Approximate state centroids with mock live wind vectors (speed m/s, angle in
+// standard math degrees: 0=East, 90=North). Swap this array for a live
+// per-district wind API payload later — the renderer only needs {lat,lng,speed,angle}.
+const WIND_FIELD_SOURCE = [
+  {lat:34.0,lng:76.5,speed:4,angle:200},{lat:31.9,lng:77.2,speed:4,angle:210},
+  {lat:30.1,lng:79.0,speed:4,angle:210},{lat:31.1,lng:75.3,speed:3,angle:220},
+  {lat:29.1,lng:76.0,speed:3,angle:220},{lat:28.6,lng:77.2,speed:3,angle:220},
+  {lat:27.0,lng:73.5,speed:6,angle:250},{lat:22.5,lng:71.5,speed:6,angle:260},
+  {lat:19.3,lng:75.5,speed:5,angle:240},{lat:23.5,lng:78.5,speed:4,angle:230},
+  {lat:27.0,lng:80.5,speed:3,angle:200},{lat:25.5,lng:85.5,speed:3,angle:190},
+  {lat:23.0,lng:87.5,speed:5,angle:170},{lat:20.5,lng:84.5,speed:6,angle:160},
+  {lat:15.9,lng:79.7,speed:5,angle:150},{lat:18.0,lng:79.0,speed:4,angle:200},
+  {lat:11.0,lng:78.5,speed:6,angle:130},{lat:10.5,lng:76.3,speed:7,angle:240},
+  {lat:15.0,lng:76.0,speed:5,angle:240},{lat:15.4,lng:74.0,speed:6,angle:250},
+  {lat:21.5,lng:82.0,speed:3,angle:190},{lat:23.6,lng:85.3,speed:3,angle:180},
+  {lat:26.5,lng:92.5,speed:4,angle:160},{lat:34.2,lng:77.6,speed:5,angle:190}
+];
+
+let projectedField = [];
+let particles = [];
+let windOn = true;
+let rafId = null;
+const isMobile = window.innerWidth <= 880;
+const PARTICLE_COUNT = isMobile ? 130 : 260;
+
+function speedToColor(s){
+  // calm cyan -> strong amber, s roughly 0..8 m/s
+  const t = Math.max(0, Math.min(1, s / 8));
+  const r = Math.round(34 + t * (251 - 34));
+  const g = Math.round(211 + t * (146 - 211));
+  const b = Math.round(238 + t * (60 - 238));
+  return `${r},${g},${b}`;
+}
+
+function resizeCanvas(){
+  const rect = mapContainer.getBoundingClientRect();
+  windCanvas.width = rect.width;
+  windCanvas.height = rect.height;
+}
+
+function projectField(){
+  projectedField = WIND_FIELD_SOURCE.map(p => {
+    const pt = map.latLngToContainerPoint([p.lat, p.lng]);
+    const rad = p.angle * Math.PI / 180;
+    return { x: pt.x, y: pt.y, vx: Math.cos(rad) * p.speed, vy: -Math.sin(rad) * p.speed, speed: p.speed };
+  });
+}
+
+function velocityAt(x, y){
+  let sw = 0, vx = 0, vy = 0, spd = 0;
+  for (const f of projectedField){
+    const dx = x - f.x, dy = y - f.y;
+    const d2 = dx*dx + dy*dy + 900; // softening term
+    const w = 1 / d2;
+    sw += w; vx += f.vx * w; vy += f.vy * w; spd += f.speed * w;
+  }
+  if (sw === 0) return { vx:0, vy:0, speed:0 };
+  return { vx: vx/sw, vy: vy/sw, speed: spd/sw };
+}
+
+function spawnParticle(){
+  return {
+    x: Math.random() * windCanvas.width,
+    y: Math.random() * windCanvas.height,
+    age: 0, life: 60 + Math.random() * 80,
+    trail: []
+  };
+}
+
+function initWindField(){
+  resizeCanvas();
+  projectField();
+  particles = Array.from({length: PARTICLE_COUNT}, spawnParticle);
+  if (!rafId) animateWind();
+}
+
+function animateWind(){
+  rafId = requestAnimationFrame(animateWind);
+  if (!windOn || document.hidden) return;
+
+  // Fade the canvas's own alpha channel (not paint black) so the map tiles
+  // underneath stay visible — painting black here was the bug: on a
+  // transparent canvas it compounds toward solid black every frame instead
+  // of fading, which is why the map only reappeared on move/resize (those
+  // resize the canvas, which force-clears it).
+  wctx.globalCompositeOperation = 'destination-out';
+  wctx.fillStyle = 'rgba(0,0,0,0.14)';
+  wctx.fillRect(0, 0, windCanvas.width, windCanvas.height);
+  wctx.globalCompositeOperation = 'source-over';
+
+  for (const p of particles){
+    const v = velocityAt(p.x, p.y);
+    const nx = p.x + v.vx * 0.9;
+    const ny = p.y + v.vy * 0.9;
+
+    p.trail.push({x:p.x, y:p.y});
+    if (p.trail.length > 5) p.trail.shift();
+
+    wctx.beginPath();
+    wctx.strokeStyle = `rgba(${speedToColor(v.speed)},0.65)`;
+    wctx.lineWidth = 1.1;
+    wctx.moveTo(p.trail[0].x, p.trail[0].y);
+    for (let i=1;i<p.trail.length;i++) wctx.lineTo(p.trail[i].x, p.trail[i].y);
+    wctx.lineTo(nx, ny);
+    wctx.stroke();
+
+    p.x = nx; p.y = ny; p.age++;
+
+    if (p.age > p.life || p.x < 0 || p.x > windCanvas.width || p.y < 0 || p.y > windCanvas.height){
+      Object.assign(p, spawnParticle());
+    }
+  }
+}
+
+map.on('move zoom resize', () => { resizeCanvas(); projectField(); });
+window.addEventListener('resize', () => { resizeCanvas(); projectField(); });
+
+document.getElementById('wind-toggle').onclick = function(){
+  windOn = !windOn;
+  this.classList.toggle('off', !windOn);
+  if (!windOn) wctx.clearRect(0,0,windCanvas.width,windCanvas.height);
+};
+
+// Only safe to call now — initWindField() (and everything it touches:
+// resizeCanvas, projectField, WIND_FIELD_SOURCE, PARTICLE_COUNT) is
+// defined above this line. Calling it any earlier throws a
+// "Cannot access before initialization" error on the const/let
+// declarations below and silently kills the rest of the script,
+// including the WebSocket connection further down — that was the actual
+// root cause of the dashboard never receiving live data.
+initWindField();
+
+/* ============================================================
+   3b. CLOUD MAP — live INSAT-3DS visible imagery + same-day timelapse
+============================================================ */
+let mapMode = 'reports';
+let satFrames = [];       // frames for the date currently shown, oldest -> newest
+let satFrameIdx = -1;
+let satPlaying = false;
+let satPlayTimer = null;
+let satFollowLive = true; // auto-jump to newly captured frames while true
+
+function todayIST(){
+  // Mirrors the backend's IST-day grouping (UTC+5:30) so "today" here
+  // matches the date new frames get filed under server-side.
+  const now = new Date();
+  const ist = new Date(now.getTime() + (5.5 * 60 + now.getTimezoneOffset()) * 60000);
+  return ist.toISOString().slice(0, 10);
+}
+
+function fmtSatTime(iso){
+  return new Date(iso).toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+  }) + ' IST';
+}
+
+function setMapMode(mode){
+  mapMode = mode;
+  document.getElementById('mode-reports-btn').classList.toggle('active', mode === 'reports');
+  document.getElementById('mode-cloud-btn').classList.toggle('active', mode === 'cloud');
+  document.getElementById('cloud-map-panel').classList.toggle('active', mode === 'cloud');
+  if (mode === 'cloud' && satFrames.length === 0) loadSatelliteToday();
+}
+document.getElementById('mode-reports-btn').onclick = () => setMapMode('reports');
+document.getElementById('mode-cloud-btn').onclick = () => setMapMode('cloud');
+
+async function loadSatelliteToday(){
+  try {
+    const data = await (await fetch('/api/satellite/frames?date=' + todayIST())).json();
+    satFrames = data.frames;
+    if (satFrames.length){
+      showSatFrame(satFrames.length - 1);
+      satFollowLive = true;
+    } else {
+      document.getElementById('sat-empty-state').classList.remove('hidden');
+    }
+  } catch (e) { /* backend not reachable yet */ }
+}
+
+function showSatFrame(idx){
+  if (idx < 0 || idx >= satFrames.length) return;
+  satFrameIdx = idx;
+  const frame = satFrames[idx];
+  const img = document.getElementById('sat-image');
+  img.src = frame.url;
+  img.onload = () => img.classList.add('loaded');
+  document.getElementById('sat-empty-state').classList.add('hidden');
+  document.getElementById('sat-caption-text').textContent = 'INSAT-3DS Visible · ' + fmtSatTime(frame.captured_at);
+  const liveTag = document.getElementById('sat-live-tag');
+  const isLatest = idx === satFrames.length - 1;
+  liveTag.textContent = isLatest ? '● LIVE' : '○ REPLAY';
+  liveTag.classList.toggle('stale', !isLatest);
+
+  const scrubber = document.getElementById('sat-scrubber');
+  scrubber.max = Math.max(0, satFrames.length - 1);
+  scrubber.value = idx;
+  scrubber.disabled = satFrames.length < 2;
+  document.getElementById('sat-frame-label').textContent = `${idx + 1} / ${satFrames.length}`;
+}
+
+document.getElementById('sat-scrubber').oninput = (e) => {
+  satFollowLive = false;
+  pauseSatPlayback();
+  showSatFrame(Number(e.target.value));
+};
+
+function pauseSatPlayback(){
+  satPlaying = false;
+  document.getElementById('sat-play-btn').textContent = '▶';
+  if (satPlayTimer) { clearInterval(satPlayTimer); satPlayTimer = null; }
+}
+
+document.getElementById('sat-play-btn').onclick = () => {
+  if (satFrames.length < 2) return;
+  if (satPlaying){
+    pauseSatPlayback();
+    return;
+  }
+  satPlaying = true;
+  satFollowLive = false;
+  document.getElementById('sat-play-btn').textContent = '⏸';
+  satPlayTimer = setInterval(() => {
+    let next = satFrameIdx + 1;
+    if (next >= satFrames.length) next = 0; // loop back to start of the day
+    showSatFrame(next);
+  }, 600);
+};
+
+/* ============================================================
+   4. LIVE DATA CHANNEL — WebSocket with local-simulation fallback
+      (Swap the simulation below for the real Python/FastAPI feed
+      once the ingestion backend is deployed.)
+============================================================ */
+const liveLabel = document.getElementById('live-label');
+let usingSimulation = false;
+
+function applyWeatherUpdate(payload){
+  document.getElementById('max-temp').innerText = payload.max_temp + ' °C';
+  document.getElementById('max-temp-loc').innerText = payload.max_temp_city || '—';
+  document.getElementById('min-temp').innerText = payload.min_temp + ' °C';
+  document.getElementById('min-temp-loc').innerText = payload.min_temp_city || '—';
+  document.getElementById('latest-rain').innerText = payload.latest_rain + ' mm/hr';
+  document.getElementById('rain-loc').innerText = payload.latest_rain_city || '—';
+  // ingest_rate is the actual count of records the backend processed this
+  // cycle (not a fabricated social-media-scale number) — see note in
+  // startSimulation() and the Python backend below.
+  document.getElementById('ingest-rate').innerText = payload.ingest_rate + ' / min';
+  document.getElementById('ingest-sub').innerText = payload.cities_polled
+    ? `${payload.cities_polled} stations polled · updates every 60s`
+    : 'Live backend feed';
+
+  if (payload.alert){
+    const feedContainer = document.getElementById('feed-stream');
+    if (feedContainer && document.getElementById('inspector-content').style.display === 'block'){
+      const card = document.createElement('div');
+      card.className = 'feed-card';
+      card.innerHTML = `
+        <div class="feed-top">
+          <span class="trust-badge">Trust score ${payload.alert.confidence}</span>
+          <span class="verify-tag Verified">Live</span>
+        </div>
+        <p><b>${payload.alert.city}:</b> ${payload.alert.post_text}</p>`;
+      feedContainer.insertBefore(card, feedContainer.firstChild);
+      while (feedContainer.children.length > 6) feedContainer.removeChild(feedContainer.lastChild);
+    }
+  }
+}
+
+function startSimulation(){
+  usingSimulation = true;
+  liveLabel.textContent = 'SIMULATED FEED (DEMO)';
+  const cities = [
+    { name:"Mumbai, Maharashtra" }, { name:"Chennai, Tamil Nadu" }, { name:"Jaipur, Rajasthan" },
+    { name:"Guwahati, Assam" }, { name:"Bengaluru, Karnataka" }, { name:"Bhubaneswar, Odisha" },
+    { name:"Lucknow, Uttar Pradesh" }, { name:"Kochi, Kerala" }, { name:"Churu, Rajasthan" },
+    { name:"Dras, Ladakh" }, { name:"Cherrapunji, Meghalaya" }, { name:"Delhi" }
+  ];
+  const events = ["heavy rainfall","gusty winds","thunderstorm activity","heat stress conditions","dense fog","dust haze"];
+  const tick = () => {
+    const maxCity = cities[Math.floor(Math.random()*cities.length)];
+    const minCity = cities[Math.floor(Math.random()*cities.length)];
+    const rainCity = cities[Math.floor(Math.random()*cities.length)];
+    applyWeatherUpdate({
+      max_temp: (42 + Math.random()*5).toFixed(1),
+      max_temp_city: maxCity.name,
+      min_temp: (-3 + Math.random()*4).toFixed(1),
+      min_temp_city: minCity.name,
+      latest_rain: Math.round(40 + Math.random()*70),
+      latest_rain_city: rainCity.name,
+      // matches the real backend: one poll cycle = cities.length records ingested
+      ingest_rate: cities.length,
+      cities_polled: cities.length,
+      alert: {
+        city: cities[Math.floor(Math.random()*cities.length)].name,
+        post_text: `Citizen report: ${events[Math.floor(Math.random()*events.length)]} observed. #IMD`,
+        confidence: (0.7 + Math.random()*0.28).toFixed(2)
+      }
+    });
+  };
+  tick();
+  setInterval(tick, 60000);
+}
+
+try {
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socket = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+  socket.onmessage = e => {
+    const payload = JSON.parse(e.data);
+    if (payload.type === 'weather_update'){
+      applyWeatherUpdate(payload);
+    } else if (payload.type === 'new_report'){
+      const r = fromApiReport(payload.report);
+      const matchesActiveFilters =
+        (filters.event === 'All' || r.event === filters.event) &&
+        (filters.verify === 'All' || r.verification === filters.verify) &&
+        (filters.state === 'All' || r.state === filters.state) &&
+        (!filters.date || payload.report.created_at.slice(0,10) === filters.date);
+      if (matchesActiveFilters){
+        ALL_REPORTS.unshift(r);
+        renderReports();
+      }
+      TOTAL_REPORTS += 1;
+      document.getElementById('total-count').textContent = TOTAL_REPORTS;
+    } else if (payload.type === 'verification_update'){
+      const r = ALL_REPORTS.find(x => x.id === payload.id);
+      if (r) { r.verification = payload.status; renderReports(); }
+    } else if (payload.type === 'stations_update'){
+      STATIONS = payload.stations;
+      renderAreaLabels();
+    } else if (payload.type === 'satellite_update'){
+      const frame = payload.frame;
+      if (frame.date === todayIST()){
+        satFrames.push(frame);
+        if (satFollowLive && !satPlaying) showSatFrame(satFrames.length - 1);
+        else if (mapMode === 'cloud') {
+          // not following live / mid-playback — just keep the scrubber's
+          // range in sync so the new frame is reachable without a reload
+          const scrubber = document.getElementById('sat-scrubber');
+          scrubber.max = satFrames.length - 1;
+        }
+      }
+    }
+  };
+  socket.onerror = () => { if (!usingSimulation) { socket.close(); startSimulation(); } };
+  socket.onclose = () => { if (!usingSimulation) startSimulation(); };
+} catch (e) {
+  startSimulation();
+}
+
+/* ============================================================
+   5. MOBILE TAB NAVIGATION
+============================================================ */
+function switchTab(tab){
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.getElementById('panel-left').classList.toggle('mobile-active', tab === 'left');
+  document.getElementById('panel-right').classList.toggle('mobile-active', tab === 'right');
+  document.getElementById('map-container').classList.toggle('mobile-active', tab === 'map');
+  if (tab === 'map') setTimeout(() => { map.invalidateSize(); resizeCanvas(); projectField(); }, 50);
+}
+document.querySelectorAll('.tab-btn').forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+</script>
+</body>
+</html>

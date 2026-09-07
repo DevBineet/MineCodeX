@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VAYUNET — Admin Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#060a14; --bg-panel:#0c1120; --bg-card:#101830; --border:#1e2740;
+    --text:#eef1fb; --text-dim:#7c88ac; --text-faint:#4c5878;
+    --cyan:#22d3ee; --green:#34d399; --amber:#fb923c; --red:#f43f5e;
+    --font-display:'Space Grotesk',sans-serif; --font-body:'Inter',sans-serif; --font-mono:'JetBrains Mono',monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-height:100vh;}
+  header{display:flex;justify-content:space-between;align-items:center;padding:14px 22px;background:var(--bg-panel);border-bottom:1px solid var(--border);}
+  .brand h1{font-family:var(--font-display);font-size:1.05rem;font-weight:700;}
+  .brand .tag{font-size:0.7rem;color:var(--text-dim);}
+  header a{font-family:var(--font-mono);font-size:0.72rem;color:var(--text-dim);text-decoration:none;border:1px solid var(--border);padding:6px 12px;border-radius:20px;}
+  header a:hover{color:var(--cyan);border-color:var(--cyan);}
+
+  main{padding:20px 22px;max-width:1400px;margin:0 auto;}
+
+  .stat-strip{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px;}
+  .stat-card{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:12px 16px;min-width:130px;flex:1;}
+  .stat-card label{display:block;font-size:0.66rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px;}
+  .stat-card .v{font-family:var(--font-mono);font-size:1.3rem;font-weight:700;color:var(--cyan);}
+
+  .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px;background:var(--bg-panel);border:1px solid var(--border);padding:12px;border-radius:10px;}
+  .toolbar label{font-size:0.68rem;color:var(--text-dim);display:block;margin-bottom:4px;}
+  .toolbar select, .toolbar input{background:var(--bg-card);border:1px solid var(--border);color:var(--text);padding:7px 9px;border-radius:6px;font-family:var(--font-body);font-size:0.8rem;}
+  .toolbar .field{display:flex;flex-direction:column;}
+  .toolbar button.refresh{margin-left:auto;background:rgba(34,211,238,0.1);border:1px solid var(--cyan);color:var(--cyan);padding:8px 16px;border-radius:8px;font-family:var(--font-mono);font-size:0.75rem;cursor:pointer;}
+  .live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block;margin-right:6px;animation:pulse 1.6s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+  .conn-label{font-family:var(--font-mono);font-size:0.7rem;color:var(--text-dim);}
+
+  table{width:100%;border-collapse:collapse;background:var(--bg-panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+  thead th{text-align:left;font-family:var(--font-mono);font-size:0.66rem;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);padding:10px 12px;border-bottom:1px solid var(--border);background:var(--bg-card);}
+  tbody td{padding:10px 12px;border-bottom:1px solid var(--border);font-size:0.8rem;vertical-align:top;}
+  tbody tr:hover{background:rgba(34,211,238,0.03);}
+  .muted{color:var(--text-faint);font-size:0.72rem;}
+  .badge{font-family:var(--font-mono);font-size:0.65rem;padding:2px 8px;border-radius:10px;white-space:nowrap;display:inline-block;}
+  .badge.Verified{color:var(--green);background:rgba(52,211,153,.12);}
+  .badge.Unverified{color:var(--amber);background:rgba(251,146,60,.12);}
+  .badge.Flagged{color:var(--red);background:rgba(244,63,94,.12);}
+  .badge.Duplicate{color:var(--text-dim);background:rgba(124,136,172,.12);}
+  .trust{font-family:var(--font-mono);font-size:0.72rem;}
+  .actions{display:flex;gap:5px;flex-wrap:wrap;}
+  .actions button{font-family:var(--font-mono);font-size:0.65rem;padding:4px 9px;border-radius:5px;border:1px solid var(--border);background:transparent;color:var(--text-dim);cursor:pointer;}
+  .actions button:hover{border-color:var(--cyan);color:var(--cyan);}
+  .actions button.danger:hover{border-color:var(--red);color:var(--red);}
+  .actions button.good:hover{border-color:var(--green);color:var(--green);}
+  .empty-row td{text-align:center;color:var(--text-faint);padding:30px;}
+  .pager{display:flex;gap:8px;justify-content:center;margin-top:16px;}
+  .pager button{font-family:var(--font-mono);font-size:0.75rem;padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-dim);cursor:pointer;}
+  .pager button:disabled{opacity:0.4;cursor:default;}
+  .pager span{font-family:var(--font-mono);font-size:0.75rem;color:var(--text-dim);align-self:center;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>VAYUNET Admin</h1>
+    <div class="tag">Verification &amp; moderation panel · date, event, location &amp; status filtering</div>
+  </div>
+  <a href="/">&larr; Back to dashboard</a>
+</header>
+
+<main>
+  <div class="stat-strip" id="stat-strip"></div>
+
+  <div class="toolbar">
+    <div class="field">
+      <label>Date</label>
+      <input type="date" id="f-date">
+    </div>
+    <div class="field">
+      <label>Event Type</label>
+      <select id="f-event"><option value="All">All events</option></select>
+    </div>
+    <div class="field">
+      <label>State</label>
+      <select id="f-state"><option value="All">All states</option></select>
+    </div>
+    <div class="field">
+      <label>Verification</label>
+      <select id="f-verify">
+        <option value="All">All statuses</option>
+        <option>Verified</option>
+        <option>Unverified</option>
+        <option>Flagged</option>
+        <option>Duplicate</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>&nbsp;</label>
+      <span class="conn-label"><span class="live-dot" id="live-dot"></span><span id="conn-label">Connecting…</span></span>
+    </div>
+    <button class="refresh" id="refresh-btn">Refresh</button>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th><th>Source</th><th>Location</th><th>Event</th>
+        <th>Report text</th><th>Media</th><th>Trust</th><th>Status</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="report-rows">
+      <tr class="empty-row"><td colspan="9">Loading…</td></tr>
+    </tbody>
+  </table>
+
+  <div class="pager">
+    <button id="prev-btn">&larr; Prev</button>
+    <span id="page-label">Page 1</span>
+    <button id="next-btn">Next &rarr;</button>
+  </div>
+</main>
+
+<script>
+const EVENT_TYPES = ["Rain","Heatwave","Thunderstorm","Flooding","Fog","Dust Storm","Strong Winds","Normal"];
+EVENT_TYPES.forEach(ev => {
+  const o = document.createElement('option'); o.textContent = ev; document.getElementById('f-event').appendChild(o);
+});
+
+const PAGE_SIZE = 25;
+let offset = 0;
+
+async function loadStates(){
+  try {
+    const states = await (await fetch('/api/states')).json();
+    const sel = document.getElementById('f-state');
+    states.forEach(s => { const o = document.createElement('option'); o.textContent = s; sel.appendChild(o); });
+  } catch (e) {}
+}
+
+async function loadStats(){
+  try {
+    const s = await (await fetch('/api/stats')).json();
+    const strip = document.getElementById('stat-strip');
+    strip.innerHTML = `
+      <div class="stat-card"><label>Total Reports</label><div class="v">${s.total}</div></div>
+      <div class="stat-card"><label>Last 24h</label><div class="v">${s.last_24h}</div></div>
+      <div class="stat-card"><label>Verified</label><div class="v" style="color:var(--green)">${s.by_verification.Verified||0}</div></div>
+      <div class="stat-card"><label>Unverified</label><div class="v" style="color:var(--amber)">${s.by_verification.Unverified||0}</div></div>
+      <div class="stat-card"><label>Flagged</label><div class="v" style="color:var(--red)">${s.by_verification.Flagged||0}</div></div>
+      <div class="stat-card"><label>Duplicate</label><div class="v" style="color:var(--text-dim)">${s.by_verification.Duplicate||0}</div></div>
+    `;
+  } catch (e) {}
+}
+
+function currentFilters(){
+  return {
+    date: document.getElementById('f-date').value || null,
+    event: document.getElementById('f-event').value,
+    state: document.getElementById('f-state').value,
+    verification: document.getElementById('f-verify').value,
+  };
+}
+
+function fmtTime(iso){
+  const d = new Date(iso);
+  return d.toLocaleString('en-IN', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
+}
+
+function rowHtml(r){
+  const hashtags = (r.hashtags || []).map(h => '#'+h).join(' ');
+  return `
+    <tr data-id="${r.id}">
+      <td><span class="muted">${fmtTime(r.created_at)}</span></td>
+      <td>${r.source}</td>
+      <td>${r.city}<div class="muted">${r.state}</div></td>
+      <td>${r.event_category}</td>
+      <td style="max-width:320px;">${r.raw_text}${r.duplicate_of ? `<div class="muted">Likely duplicate of #${r.duplicate_of}</div>` : ''}</td>
+      <td>${r.media_type !== 'none' ? r.media_type : '<span class="muted">none</span>'}</td>
+      <td class="trust">${Number(r.trust_score).toFixed(2)}</td>
+      <td><span class="badge ${r.verification_status}">${r.verification_status}</span></td>
+      <td>
+        <div class="actions">
+          <button class="good" onclick="act(${r.id},'Verified')">Verify</button>
+          <button class="danger" onclick="act(${r.id},'Flagged')">Flag</button>
+          <button onclick="act(${r.id},'Duplicate')">Dup</button>
+        </div>
+      </td>
+    </tr>`;
+}
+
+async function loadRows(){
+  const f = currentFilters();
+  const params = new URLSearchParams({ limit: PAGE_SIZE, offset });
+  if (f.date) params.set('date', f.date);
+  if (f.event !== 'All') params.set('event', f.event);
+  if (f.state !== 'All') params.set('state', f.state);
+  if (f.verification !== 'All') params.set('verification', f.verification);
+
+  const tbody = document.getElementById('report-rows');
+  try {
+    const rows = await (await fetch('/api/reports?' + params.toString())).json();
+    tbody.innerHTML = rows.length ? rows.map(rowHtml).join('') : `<tr class="empty-row"><td colspan="9">No reports match these filters.</td></tr>`;
+    document.getElementById('page-label').textContent = `Page ${Math.floor(offset/PAGE_SIZE)+1}`;
+    document.getElementById('next-btn').disabled = rows.length < PAGE_SIZE;
+    document.getElementById('prev-btn').disabled = offset === 0;
+  } catch (e) {
+    tbody.innerHTML = `<tr class="empty-row"><td colspan="9">Backend unreachable — start it with "uvicorn backend:app".</td></tr>`;
+  }
+}
+
+async function act(id, status){
+  const note = prompt(`Reviewer note for report #${id} (optional):`, '') || null;
+  try {
+    await fetch(`/api/reports/${id}/verify`, {
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ status, note })
+    });
+    loadRows(); loadStats();
+  } catch (e) { alert('Could not reach the backend.'); }
+}
+
+function refreshAll(){ offset = 0; loadRows(); loadStats(); }
+
+['f-date','f-event','f-state','f-verify'].forEach(id => document.getElementById(id).addEventListener('change', refreshAll));
+document.getElementById('refresh-btn').onclick = refreshAll;
+document.getElementById('next-btn').onclick = () => { offset += PAGE_SIZE; loadRows(); };
+document.getElementById('prev-btn').onclick = () => { offset = Math.max(0, offset - PAGE_SIZE); loadRows(); };
+
+loadStates();
+refreshAll();
+
+// Live: new reports / verification changes push in over the same WS the
+// dashboard uses, so the queue updates without manual refreshing.
+try {
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socket = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+  socket.onopen = () => { document.getElementById('conn-label').textContent = 'Live'; };
+  socket.onmessage = e => {
+    const payload = JSON.parse(e.data);
+    if (payload.type === 'new_report' || payload.type === 'verification_update'){
+      loadStats();
+      if (offset === 0) loadRows();
+    }
+  };
+  socket.onerror = () => { document.getElementById('conn-label').textContent = 'Offline'; document.getElementById('live-dot').style.background = 'var(--red)'; };
+  socket.onclose = () => { document.getElementById('conn-label').textContent = 'Offline'; document.getElementById('live-dot').style.background = 'var(--red)'; };
+} catch (e) {}
+</script>
+</body>
+</html>
