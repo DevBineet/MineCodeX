@@ -1,5 +1,5 @@
 """
-db.py — centralized storage for VAYUNET.
+db.py — centralized storage for MineCodeX.
 
 The problem statement asks for collected reports (social posts, citizen
 reports, station data, public datasets) with metadata — date/time, city,
@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-DB_PATH = Path(__file__).parent / "vayunet.db"
+DB_PATH = Path(__file__).parent / "MineCodeXeX.db"
 
 _lock = threading.Lock()
 _conn = sqlite3.connect(DB_PATH, check_same_thread=False)

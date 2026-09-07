@@ -1,5 +1,5 @@
 """
-satellite.py — INSAT-3DS visible-imagery ingestion for VAYUNET's "Cloud Map"
+satellite.py — INSAT-3DS visible-imagery ingestion for MineCodeX's "Cloud Map"
 mode.
 
 IMD republishes the latest INSAT-3DS visible-band frame at a fixed URL

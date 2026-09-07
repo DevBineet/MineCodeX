@@ -1,5 +1,5 @@
 """
-VAYUNET — National Weather Big-Data Analytics Platform (reference backend)
+MineCodeXeXeXeX — National Weather Big-Data Analytics Platform (reference backend)
 
 Maps onto the problem statement like this:
 
@@ -483,7 +483,7 @@ async def lifespan(app: FastAPI):
     satellite_task.cancel()
 
 
-app = FastAPI(title="VAYUNET Weather Big-Data Platform", lifespan=lifespan)
+app = FastAPI(title="MineCodeXeX Weather Big-Data Platform", lifespan=lifespan)
 app.mount("/satellite_frames", StaticFiles(directory=str(satellite.STORAGE_DIR)), name="satellite_frames")
 
 

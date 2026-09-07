@@ -64,7 +64,7 @@ def score_trust(source: str, text: str, has_gps: bool, has_media: bool, hashtags
         score += 0.12
     if has_media:
         score += 0.10
-    if any(h.lower() in ("imd", "weatherindia", "vayunet", "indianweather") for h in hashtags):
+    if any(h.lower() in ("imd", "weatherindia", "MineCodeX", "indianweather") for h in hashtags):
         score += 0.05
 
     text = text or ""
