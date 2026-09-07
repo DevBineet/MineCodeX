@@ -107,19 +107,7 @@ CITIES = [
     {"name": "Bhubaneswar", "state": "Odisha", "lat": 20.2961, "lon": 85.8245, "tier": 1},
     {"name": "Thiruvananthapuram", "state": "Kerala", "lat": 8.5241, "lon": 76.9366, "tier": 1},
     {"name": "Panaji", "state": "Goa", "lat": 15.4909, "lon": 73.8278, "tier": 1},
-    {"name": "Raipur", "state": "Chhattisgarh", "lat": 21.2514, "lon": 81.6296, "tier": 1},
-    {"name": "Ranchi", "state": "Jharkhand", "lat": 23.3441, "lon": 85.3096, "tier": 1},
-    {"name": "Dehradun", "state": "Uttarakhand", "lat": 30.3165, "lon": 78.0322, "tier": 1},
-    {"name": "Shimla", "state": "Himachal Pradesh", "lat": 31.1048, "lon": 77.1734, "tier": 1},
-    {"name": "Srinagar", "state": "Jammu and Kashmir", "lat": 34.0837, "lon": 74.7973, "tier": 1},
-    {"name": "Jammu", "state": "Jammu and Kashmir", "lat": 32.7266, "lon": 74.8570, "tier": 1},
-    {"name": "Leh", "state": "Ladakh", "lat": 34.1526, "lon": 77.5771, "tier": 1},
-    {"name": "Gandhinagar", "state": "Gujarat", "lat": 23.2156, "lon": 72.6369, "tier": 1},
-    {"name": "Itanagar", "state": "Arunachal Pradesh", "lat": 27.0844, "lon": 93.6053, "tier": 1},
-    {"name": "Imphal", "state": "Manipur", "lat": 24.8170, "lon": 93.9368, "tier": 1},
-    {"name": "Aizawl", "state": "Mizoram", "lat": 23.7271, "lon": 92.7176, "tier": 1},
-    {"name": "Kohima", "state": "Nagaland", "lat": 25.6751, "lon": 94.1086, "tier": 1},
-    {"name": "Agartala", "state": "Tripura", "lat": 23.8315, "lon": 91.2868, "tier": 1}
+    {"name": "Raipur", "state": "Chhattisgarh", "lat": 21.2514, "lon": 81.6296, "tier": 1}
 ]
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
