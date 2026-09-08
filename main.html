@@ -192,6 +192,20 @@
   .cloud-map-controls input[type=range]{flex:1;accent-color:var(--cyan);}
   .cloud-map-controls .muted{font-family:var(--font-mono);font-size:0.68rem;color:var(--text-dim);white-space:nowrap;}
   .cloud-map-note{text-align:center;font-size:0.66rem;color:var(--text-faint);padding:2px 16px 14px;}
+  .sat-source-row{
+    position:absolute;top:16px;right:16px;z-index:1001;
+    display:flex;gap:6px;background:rgba(12,17,32,0.92);border:1px solid var(--border);
+    border-radius:20px;padding:4px;backdrop-filter:blur(6px);
+  }
+  .sat-source-row button{
+    background:transparent;border:none;color:var(--text-dim);
+    font-family:var(--font-mono);font-size:0.64rem;font-weight:700;
+    padding:7px 12px;border-radius:16px;cursor:pointer;letter-spacing:.2px;
+    display:flex;align-items:center;gap:5px;white-space:nowrap;
+  }
+  .sat-source-row button.active{color:var(--cyan);background:rgba(34,211,238,0.12);}
+  .sat-source-row button .frame-count{color:var(--text-faint);font-weight:500;}
+  .sat-source-row button.active .frame-count{color:var(--cyan);opacity:0.75;}
 
   .area-label{
     text-align:center;pointer-events:none;transform:translate(-50%,-50%);
@@ -347,7 +361,7 @@
     <a href="/admin" style="font-family:var(--font-mono);font-size:0.72rem;color:var(--text-dim);text-decoration:none;border:1px solid var(--border);padding:6px 12px;border-radius:20px;white-space:nowrap;">Admin Panel</a>
     <div class="live-status">
       <div class="pulse-dot"></div>
-      <span id="live-label">ACTIVE</span>
+      <span id="live-label">LIVE INGESTION ACTIVE</span>
     </div>
   </div>
 </header>
@@ -356,7 +370,7 @@
 
   <!-- LEFT: NATIONAL SUMMARY -->
   <div class="panel mobile-active" id="panel-left">
-    <div class="panel-title">Highlights</div>
+    <div class="panel-title">National Summary</div>
     <div class="kpi-strip">
       <div class="metric-card">
         <svg class="icon" viewBox="0 0 24 24"><path class="icon-stroke" d="M12 3v10.5a3.5 3.5 0 1 1-3 0V3z"/><path class="icon-stroke" d="M9 6h3"/></svg>
@@ -414,12 +428,13 @@
     </div>
 
     <div id="cloud-map-panel">
+      <div class="sat-source-row" id="sat-source-row"><!-- populated from /api/satellite/sources --></div>
       <div class="cloud-map-frame">
-        <img id="sat-image" alt="INSAT-3DS visible satellite imagery">
+        <img id="sat-image" alt="Satellite cloud imagery">
         <div id="sat-empty-state">
           <div class="dot-spin"></div>
-          <p>No satellite frames captured yet.</p>
-          <p class="muted">MineCodeX checks IMD's live INSAT-3DS feed every few minutes — the first frame usually lands within a few minutes of the server starting.</p>
+          <p>No frames captured yet for this source.</p>
+          <p class="muted" id="sat-empty-note">VAYUNET checks this feed periodically — the first frame usually lands within a few minutes of the server starting.</p>
         </div>
       </div>
       <div class="cloud-map-caption">
@@ -431,7 +446,7 @@
         <input type="range" id="sat-scrubber" min="0" max="0" value="0" step="1" disabled>
         <span id="sat-frame-label" class="muted">0 / 0</span>
       </div>
-      <div class="cloud-map-note">Timelapse plays back today's saved INSAT-3DS visible frames (IST). Source: IMD.</div>
+      <div class="cloud-map-note" id="sat-source-note">Timelapse plays back today's saved frames (IST).</div>
     </div>
   </div>
 
@@ -1042,14 +1057,24 @@ document.getElementById('wind-toggle').onclick = function(){
 initWindField();
 
 /* ============================================================
-   3b. CLOUD MAP — live INSAT-3DS visible imagery + same-day timelapse
+   3b. CLOUD MAP — multi-source satellite imagery + same-day timelapse.
+   Each source (IMD, Himawari-9/India, ...) keeps its own frame list;
+   switching sources just swaps which list is being scrubbed/played, and
+   a fresh /api/satellite/frames?source=... call is made the first time
+   a given source is opened. The source with the most frames captured
+   so far today is auto-selected on load ("longest timelapse"), and the
+   picker in the corner lets the user override that anytime.
 ============================================================ */
 let mapMode = 'reports';
-let satFrames = [];       // frames for the date currently shown, oldest -> newest
+let SAT_SOURCES = [];          // [{id,label,description,poll_seconds,frames_today}, ...]
+let currentSource = null;      // id of the source currently shown
+const satFramesBySource = {};  // source id -> frames array (oldest -> newest), lazy-loaded
 let satFrameIdx = -1;
 let satPlaying = false;
 let satPlayTimer = null;
-let satFollowLive = true; // auto-jump to newly captured frames while true
+let satFollowLive = true;      // auto-jump to newly captured frames while true
+
+function satFrames(){ return satFramesBySource[currentSource] || []; }
 
 function todayIST(){
   // Mirrors the backend's IST-day grouping (UTC+5:30) so "today" here
@@ -1070,43 +1095,89 @@ function setMapMode(mode){
   document.getElementById('mode-reports-btn').classList.toggle('active', mode === 'reports');
   document.getElementById('mode-cloud-btn').classList.toggle('active', mode === 'cloud');
   document.getElementById('cloud-map-panel').classList.toggle('active', mode === 'cloud');
-  if (mode === 'cloud' && satFrames.length === 0) loadSatelliteToday();
+  if (mode === 'cloud' && SAT_SOURCES.length === 0) initSatelliteSources();
 }
 document.getElementById('mode-reports-btn').onclick = () => setMapMode('reports');
 document.getElementById('mode-cloud-btn').onclick = () => setMapMode('cloud');
 
-async function loadSatelliteToday(){
+async function initSatelliteSources(){
   try {
-    const data = await (await fetch('/api/satellite/frames?date=' + todayIST())).json();
-    satFrames = data.frames;
-    if (satFrames.length){
-      showSatFrame(satFrames.length - 1);
-      satFollowLive = true;
-    } else {
-      document.getElementById('sat-empty-state').classList.remove('hidden');
-    }
+    const data = await (await fetch('/api/satellite/sources')).json();
+    SAT_SOURCES = data.sources;
+    if (!SAT_SOURCES.length) return;
+    renderSourceRow();
+    // Smart default: whichever source has the longest timelapse today.
+    const richest = SAT_SOURCES.reduce((a, b) => (b.frames_today > a.frames_today ? b : a));
+    await selectSource(richest.id);
   } catch (e) { /* backend not reachable yet */ }
 }
 
+function renderSourceRow(){
+  const row = document.getElementById('sat-source-row');
+  row.innerHTML = '';
+  SAT_SOURCES.forEach(s => {
+    const btn = document.createElement('button');
+    btn.className = s.id === currentSource ? 'active' : '';
+    btn.title = s.description;
+    btn.innerHTML = `${s.label} <span class="frame-count">${s.frames_today}</span>`;
+    btn.onclick = () => selectSource(s.id);
+    row.appendChild(btn);
+  });
+}
+
+async function selectSource(sourceId){
+  pauseSatPlayback();
+  currentSource = sourceId;
+  satFollowLive = true;
+  renderSourceRow();
+  const meta = SAT_SOURCES.find(s => s.id === sourceId);
+  document.getElementById('sat-source-note').textContent =
+    `Timelapse plays back today's saved frames (IST). Source: ${meta ? meta.label : sourceId}.`;
+  document.getElementById('sat-empty-note').textContent =
+    `VAYUNET checks this feed roughly every ${meta ? Math.round(meta.poll_seconds / 60) : 5} min — the first frame usually lands shortly after the server starts.`;
+
+  if (!satFramesBySource[sourceId]) await loadSatelliteToday(sourceId);
+  const frames = satFrames();
+  if (frames.length) {
+    showSatFrame(frames.length - 1);
+  } else {
+    document.getElementById('sat-image').classList.remove('loaded');
+    document.getElementById('sat-empty-state').classList.remove('hidden');
+    document.getElementById('sat-scrubber').max = 0;
+    document.getElementById('sat-scrubber').disabled = true;
+    document.getElementById('sat-frame-label').textContent = '0 / 0';
+  }
+}
+
+async function loadSatelliteToday(sourceId){
+  try {
+    const data = await (await fetch(`/api/satellite/frames?source=${sourceId}&date=${todayIST()}`)).json();
+    satFramesBySource[sourceId] = data.frames;
+  } catch (e) { satFramesBySource[sourceId] = []; }
+}
+
 function showSatFrame(idx){
-  if (idx < 0 || idx >= satFrames.length) return;
+  const frames = satFrames();
+  if (idx < 0 || idx >= frames.length) return;
   satFrameIdx = idx;
-  const frame = satFrames[idx];
+  const frame = frames[idx];
   const img = document.getElementById('sat-image');
   img.src = frame.url;
   img.onload = () => img.classList.add('loaded');
   document.getElementById('sat-empty-state').classList.add('hidden');
-  document.getElementById('sat-caption-text').textContent = 'INSAT-3DS Visible · ' + fmtSatTime(frame.captured_at);
+  const meta = SAT_SOURCES.find(s => s.id === frame.source);
+  document.getElementById('sat-caption-text').textContent =
+    (meta ? meta.label : frame.source) + ' · ' + fmtSatTime(frame.captured_at);
   const liveTag = document.getElementById('sat-live-tag');
-  const isLatest = idx === satFrames.length - 1;
+  const isLatest = idx === frames.length - 1;
   liveTag.textContent = isLatest ? '● LIVE' : '○ REPLAY';
   liveTag.classList.toggle('stale', !isLatest);
 
   const scrubber = document.getElementById('sat-scrubber');
-  scrubber.max = Math.max(0, satFrames.length - 1);
+  scrubber.max = Math.max(0, frames.length - 1);
   scrubber.value = idx;
-  scrubber.disabled = satFrames.length < 2;
-  document.getElementById('sat-frame-label').textContent = `${idx + 1} / ${satFrames.length}`;
+  scrubber.disabled = frames.length < 2;
+  document.getElementById('sat-frame-label').textContent = `${idx + 1} / ${frames.length}`;
 }
 
 document.getElementById('sat-scrubber').oninput = (e) => {
@@ -1122,7 +1193,7 @@ function pauseSatPlayback(){
 }
 
 document.getElementById('sat-play-btn').onclick = () => {
-  if (satFrames.length < 2) return;
+  if (satFrames().length < 2) return;
   if (satPlaying){
     pauseSatPlayback();
     return;
@@ -1131,8 +1202,9 @@ document.getElementById('sat-play-btn').onclick = () => {
   satFollowLive = false;
   document.getElementById('sat-play-btn').textContent = '⏸';
   satPlayTimer = setInterval(() => {
+    const frames = satFrames();
     let next = satFrameIdx + 1;
-    if (next >= satFrames.length) next = 0; // loop back to start of the day
+    if (next >= frames.length) next = 0; // loop back to start of the day
     showSatFrame(next);
   }, 600);
 };
@@ -1241,13 +1313,20 @@ try {
     } else if (payload.type === 'satellite_update'){
       const frame = payload.frame;
       if (frame.date === todayIST()){
-        satFrames.push(frame);
-        if (satFollowLive && !satPlaying) showSatFrame(satFrames.length - 1);
-        else if (mapMode === 'cloud') {
-          // not following live / mid-playback — just keep the scrubber's
-          // range in sync so the new frame is reachable without a reload
-          const scrubber = document.getElementById('sat-scrubber');
-          scrubber.max = satFrames.length - 1;
+        if (!satFramesBySource[frame.source]) satFramesBySource[frame.source] = [];
+        satFramesBySource[frame.source].push(frame);
+        // Bump that source's frame count in the picker even if it's not
+        // the one currently being viewed.
+        const meta = SAT_SOURCES.find(s => s.id === frame.source);
+        if (meta) { meta.frames_today += 1; renderSourceRow(); }
+
+        if (frame.source === currentSource){
+          if (satFollowLive && !satPlaying) showSatFrame(satFrames().length - 1);
+          else if (mapMode === 'cloud') {
+            // not following live / mid-playback — just keep the scrubber's
+            // range in sync so the new frame is reachable without a reload
+            document.getElementById('sat-scrubber').max = satFrames().length - 1;
+          }
         }
       }
     }
