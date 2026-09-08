@@ -1,6 +1,9 @@
 fastapi
 pydantic
+uvicorn[standard]
 httpx
 uvicorn
 gunicorn
 Pillow
+websockets
+wsproto
