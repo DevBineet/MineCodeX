@@ -80,6 +80,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import db
+import hotspots
 import pipeline
 import satellite
 
@@ -88,6 +89,8 @@ SATELLITE_POLL_SECONDS = 5 * 60   # fallback cadence; each source in satellite.S
                                    # often just costs a request since poll_once() dedupes
 SIMULATE_SOCIAL_FEED = True   # flip off once a real social listener feeds /api/reports/submit
 SOCIAL_POST_INTERVAL_SECONDS = 20
+HOTSPOT_POLL_SECONDS = 60        # cadence for "Emerging Pattern Watch" recompute
+HOTSPOT_WINDOW_MINUTES = 180     # rolling window of reports fed into hotspots.py
 
 # ---------------------------------------------------------------------------
 # Reference station grid — real Open-Meteo readings, no API key required.
@@ -306,12 +309,15 @@ class ConnectionManager:
     def __init__(self):
         self.active: list[WebSocket] = []
         self.latest_weather: Optional[dict] = None
+        self.latest_hotspots: Optional[dict] = None
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
         self.active.append(ws)
         if self.latest_weather:
             await ws.send_json(self.latest_weather)
+        if self.latest_hotspots:
+            await ws.send_json(self.latest_hotspots)
 
     def disconnect(self, ws: WebSocket):
         if ws in self.active:
@@ -320,6 +326,8 @@ class ConnectionManager:
     async def broadcast(self, payload: dict):
         if payload.get("type") == "weather_update":
             self.latest_weather = payload
+        elif payload.get("type") == "hotspots_update":
+            self.latest_hotspots = payload
         dead = []
         for ws in self.active:
             try:
@@ -381,6 +389,50 @@ async def poll_weather_loop():
             traceback.print_exc()
 
         await asyncio.sleep(POLL_SECONDS)
+
+
+# ---------------------------------------------------------------------------
+# Emerging Pattern Watch — hotspots.py wiring
+# ---------------------------------------------------------------------------
+def build_hotspot_payload() -> dict:
+    """Pulls the rolling report window, aggregates it per-city, finds the
+    top hotspots, and for each one asks hotspots.compute_forecast() for a
+    directional cone (or an honest 'not enough signal' reason). Runs on a
+    thread (see hotspot_loop) since it's sync SQLite + CPU-bound math."""
+    since_iso = (datetime.now(timezone.utc) - timedelta(minutes=HOTSPOT_WINDOW_MINUTES)).isoformat()
+    rows = db.recent_reports(since_iso)
+    agg = hotspots.aggregate_city_reports(rows, CITIES)
+    top = hotspots.compute_hotspots(agg)
+
+    serialized = []
+    for h in top:
+        forecast = hotspots.compute_forecast(h, agg, CITIES)
+        serialized.append({
+            "city": h["city"], "state": h["state"], "lat": h["lat"], "lon": h["lon"],
+            "event": h["dominant_event"], "color": hotspots.EVENT_COLORS.get(h["dominant_event"], "#7c88ac"),
+            "total": h["total"], "verified": h["verified"],
+            "unverified": h["unverified"], "flagged": h["flagged"],
+            "latest_created_at": h["latest_created_at"],
+            "forecast": forecast,
+        })
+
+    return {
+        "type": "hotspots_update",
+        "window_minutes": HOTSPOT_WINDOW_MINUTES,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "hotspots": serialized,
+    }
+
+
+async def hotspot_loop():
+    while True:
+        try:
+            payload = await asyncio.to_thread(build_hotspot_payload)
+            await manager.broadcast(payload)
+        except Exception as exc:
+            print(f"[hotspots] compute failed: {exc}")
+            traceback.print_exc()
+        await asyncio.sleep(HOTSPOT_POLL_SECONDS)
 
 
 def serialize_satellite_frame(row: dict) -> dict:
@@ -504,6 +556,7 @@ async def lifespan(app: FastAPI):
         seed_demo_history()
     weather_task = asyncio.create_task(poll_weather_loop())
     social_task = asyncio.create_task(simulate_social_feed())
+    hotspot_task = asyncio.create_task(hotspot_loop())
     satellite_tasks = [
         asyncio.create_task(satellite_poll_loop(source_id))
         for source_id in satellite.SOURCES
@@ -511,6 +564,7 @@ async def lifespan(app: FastAPI):
     yield
     weather_task.cancel()
     social_task.cancel()
+    hotspot_task.cancel()
     for t in satellite_tasks:
         t.cancel()
 
@@ -564,6 +618,14 @@ async def stats():
 @app.get("/api/states")
 async def states():
     return await asyncio.to_thread(db.get_states)
+
+
+# ---------------- Emerging Pattern Watch (hotspots + forecast cone) ----------------
+@app.get("/api/hotspots")
+async def hotspots_endpoint():
+    """On-demand recompute (in addition to the periodic WS push from
+    hotspot_loop()) — handy for the admin panel or a manual refresh."""
+    return await asyncio.to_thread(build_hotspot_payload)
 
 
 # ---------------- Live station readings (map city labels) ----------------

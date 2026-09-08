@@ -413,3 +413,20 @@ def list_satellite_dates() -> list[str]:
     with _lock:
         rows = _conn.execute("SELECT DISTINCT date FROM satellite_frames ORDER BY date DESC").fetchall()
     return [r["date"] for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Rolling-window report pull for hotspots.py — pattern/forecast detection
+# ---------------------------------------------------------------------------
+def recent_reports(since_iso: str, limit: int = 3000) -> list[dict]:
+    """All reports (any event/verification status) since `since_iso`,
+    newest first — the rolling window hotspots.py's compute_hotspots() /
+    compute_forecast() operate over. Unlike recent_candidates() this is
+    not filtered to one event category, since a hotspot's dominant event
+    is only known after aggregating."""
+    with _lock:
+        rows = _conn.execute(
+            "SELECT * FROM reports WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?",
+            (since_iso, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]

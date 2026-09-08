@@ -106,6 +106,31 @@
   .metric-card .val{font-family:var(--font-mono);font-size:1.35rem;font-weight:700;color:var(--red);}
   .metric-card .sub{font-size:0.74rem;color:var(--text-dim);margin-top:3px;}
 
+  /* ---------- EMERGING PATTERN WATCH ---------- */
+  .hotspot-card{
+    background:var(--bg-card);border:1px solid var(--border);
+    padding:11px 12px;border-radius:10px;margin-bottom:8px;
+  }
+  .hotspot-top{display:flex;align-items:center;gap:7px;margin-bottom:4px;}
+  .hotspot-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;}
+  .hotspot-city{font-family:var(--font-display);font-weight:600;font-size:0.82rem;color:var(--text);}
+  .hotspot-event{font-family:var(--font-mono);font-size:0.63rem;color:var(--text-dim);margin-left:auto;}
+  .hotspot-meta{font-size:0.7rem;color:var(--text-dim);margin-bottom:6px;}
+  .hotspot-reason{font-size:0.68rem;color:var(--text-faint);line-height:1.4;font-style:italic;}
+  .hotspot-cone-tag{
+    font-family:var(--font-mono);font-size:0.62rem;color:var(--amber);
+    background:rgba(251,146,60,.1);border:1px solid rgba(251,146,60,.25);
+    padding:2px 7px;border-radius:8px;display:inline-block;margin-bottom:6px;
+  }
+  .hotspot-next-list{display:flex;flex-direction:column;gap:3px;}
+  .hotspot-next-row{
+    display:flex;justify-content:space-between;align-items:center;
+    font-size:0.68rem;color:var(--text-dim);
+  }
+  .hotspot-next-row b{color:var(--text);font-weight:500;}
+  .hotspot-next-prob{font-family:var(--font-mono);color:var(--cyan);}
+  .hotspot-empty{font-size:0.72rem;color:var(--text-faint);padding:4px 2px;}
+
   /* ---------- MAP ---------- */
   #map-container{position:relative;width:100%;height:100%;background:#04070f;}
   #map{width:100%;height:100%;background:#04070f;}
@@ -396,6 +421,11 @@
         <div class="val" style="color:var(--green);" id="ingest-rate">– / min</div>
         <div class="sub" id="ingest-sub">Connecting to backend…</div>
       </div>
+    </div>
+
+    <div class="panel-title" style="margin-top:18px;">Emerging Pattern Watch</div>
+    <div id="hotspot-list">
+      <div class="hotspot-empty" id="hotspot-empty-state">Watching live reports for clustering patterns…</div>
     </div>
   </div>
 
@@ -1249,6 +1279,42 @@ function applyWeatherUpdate(payload){
   }
 }
 
+/* ---------- Emerging Pattern Watch ---------- */
+function renderHotspots(payload){
+  const list = document.getElementById('hotspot-list');
+  const hotspots = payload.hotspots || [];
+  if (!hotspots.length){
+    list.innerHTML = '<div class="hotspot-empty">No clustering patterns detected in the last '
+      + (payload.window_minutes || 180) + ' minutes.</div>';
+    return;
+  }
+  list.innerHTML = hotspots.map(h => {
+    const f = h.forecast || {};
+    let coneHtml;
+    if (f.available){
+      const nextRows = (f.next_cities || []).slice(0, 4).map(nc =>
+        `<div class="hotspot-next-row"><span><b>${nc.name}</b> · ${nc.distance_km} km · ~${nc.eta_hours}h</span>` +
+        `<span class="hotspot-next-prob">${Math.round(nc.probability * 100)}%</span></div>`
+      ).join('');
+      coneHtml = `
+        <div class="hotspot-cone-tag">Spreading ~${f.center_bearing}° · ${f.confidence_signals} confirming areas</div>
+        <div class="hotspot-next-list">${nextRows || '<div class="hotspot-empty">No specific cities in range yet.</div>'}</div>`;
+    } else {
+      coneHtml = `<div class="hotspot-reason">${f.reason || 'Not enough surrounding signal to project a direction yet.'}</div>`;
+    }
+    return `
+      <div class="hotspot-card">
+        <div class="hotspot-top">
+          <span class="hotspot-dot" style="background:${h.color}"></span>
+          <span class="hotspot-city">${h.city}, ${h.state}</span>
+          <span class="hotspot-event">${h.event}</span>
+        </div>
+        <div class="hotspot-meta">${h.total} reports · ${h.verified} verified · ${h.unverified} unverified</div>
+        ${coneHtml}
+      </div>`;
+  }).join('');
+}
+
 function startSimulation(){
   usingSimulation = true;
   liveLabel.textContent = 'SIMULATED FEED (DEMO)';
@@ -1291,6 +1357,8 @@ try {
     const payload = JSON.parse(e.data);
     if (payload.type === 'weather_update'){
       applyWeatherUpdate(payload);
+    } else if (payload.type === 'hotspots_update'){
+      renderHotspots(payload);
     } else if (payload.type === 'new_report'){
       const r = fromApiReport(payload.report);
       const matchesActiveFilters =
