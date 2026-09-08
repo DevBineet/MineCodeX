@@ -1,5 +1,5 @@
 """
-MineCodeXeXeXeX — National Weather Big-Data Analytics Platform (reference backend)
+VAYUNET — National Weather Big-Data Analytics Platform (reference backend)
 
 Maps onto the problem statement like this:
 
@@ -23,10 +23,13 @@ Maps onto the problem statement like this:
         downstream branches on "is this the demo"). Swapping in a real
         listener means calling ingest_report() from it instead — every
         other line of this file is unaffected.
-      - Satellite imagery: satellite_poll_loop() polls IMD's live INSAT-3DS
-        visible-frame URL (see satellite.py), stores every genuinely new
-        frame under satellite_frames/<date>/<time>.jpg, and pushes a
-        "satellite_update" WebSocket message. That backs the frontend's
+      - Satellite imagery: one satellite_poll_loop(source_id) task per
+        entry in satellite.SOURCES (currently IMD's INSAT-3DS visible
+        frame and an India-cropped Himawari-9 GeoColor feed — see
+        satellite.py), each polling on its own cadence, storing every
+        genuinely new frame under satellite_frames/<source>/<date>/<time>.jpg,
+        and pushing a "satellite_update" WebSocket message tagged with its
+        source. That backs the frontend's
         "Cloud Map" mode, including its same-day timelapse player.
 
   * PROCESSING (see pipeline.py)
@@ -47,8 +50,9 @@ Maps onto the problem statement like this:
       - PATCH /api/reports/{id}/verify   admin verification actions
       - GET /api/stats, /api/states      aggregates for analytics widgets
       - GET /api/stations                 latest per-city temp/event reading
-      - GET /api/satellite/latest, /api/satellite/frames?date=,
-        /api/satellite/dates             Cloud Map + timelapse data
+      - GET /api/satellite/sources, /api/satellite/latest?source=,
+        /api/satellite/frames?source=&date=, /api/satellite/dates?source=
+                                          Cloud Map + timelapse data
       - WS  /ws                live push: weather_update, stations_update,
                                 new_report, verification_update,
                                 satellite_update
@@ -80,7 +84,7 @@ import pipeline
 import satellite
 
 POLL_SECONDS = 60
-SATELLITE_POLL_SECONDS = 5 * 60   # IMD refreshes roughly every 15-30 min; polling more
+SATELLITE_POLL_SECONDS = 5 * 60   # fallback cadence; each source in satellite.SOURCES can override
                                    # often just costs a request since poll_once() dedupes
 SIMULATE_SOCIAL_FEED = True   # flip off once a real social listener feeds /api/reports/submit
 SOCIAL_POST_INTERVAL_SECONDS = 20
@@ -107,7 +111,19 @@ CITIES = [
     {"name": "Bhubaneswar", "state": "Odisha", "lat": 20.2961, "lon": 85.8245, "tier": 1},
     {"name": "Thiruvananthapuram", "state": "Kerala", "lat": 8.5241, "lon": 76.9366, "tier": 1},
     {"name": "Panaji", "state": "Goa", "lat": 15.4909, "lon": 73.8278, "tier": 1},
-    {"name": "Raipur", "state": "Chhattisgarh", "lat": 21.2514, "lon": 81.6296, "tier": 1}
+    {"name": "Raipur", "state": "Chhattisgarh", "lat": 21.2514, "lon": 81.6296, "tier": 1},
+    {"name": "Ranchi", "state": "Jharkhand", "lat": 23.3441, "lon": 85.3096, "tier": 1},
+    {"name": "Dehradun", "state": "Uttarakhand", "lat": 30.3165, "lon": 78.0322, "tier": 1},
+    {"name": "Shimla", "state": "Himachal Pradesh", "lat": 31.1048, "lon": 77.1734, "tier": 1},
+    {"name": "Srinagar", "state": "Jammu and Kashmir", "lat": 34.0837, "lon": 74.7973, "tier": 1},
+    {"name": "Jammu", "state": "Jammu and Kashmir", "lat": 32.7266, "lon": 74.8570, "tier": 1},
+    {"name": "Leh", "state": "Ladakh", "lat": 34.1526, "lon": 77.5771, "tier": 1},
+    {"name": "Gandhinagar", "state": "Gujarat", "lat": 23.2156, "lon": 72.6369, "tier": 1},
+    {"name": "Itanagar", "state": "Arunachal Pradesh", "lat": 27.0844, "lon": 93.6053, "tier": 1},
+    {"name": "Imphal", "state": "Manipur", "lat": 24.8170, "lon": 93.9368, "tier": 1},
+    {"name": "Aizawl", "state": "Mizoram", "lat": 23.7271, "lon": 92.7176, "tier": 1},
+    {"name": "Kohima", "state": "Nagaland", "lat": 25.6751, "lon": 94.1086, "tier": 1},
+    {"name": "Agartala", "state": "Tripura", "lat": 23.8315, "lon": 91.2868, "tier": 1}
 ]
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
@@ -363,25 +379,30 @@ async def poll_weather_loop():
 def serialize_satellite_frame(row: dict) -> dict:
     return {
         "id": row["id"],
+        "source": row["source"],
         "date": row["date"],
         "captured_at": row["captured_at"],
         "url": f"/satellite_frames/{row['filename']}",
     }
 
 
-async def satellite_poll_loop():
+async def satellite_poll_loop(source_id: str):
+    """One of these runs per entry in satellite.SOURCES, each sleeping its
+    own source's cadence — a slow or briefly-down source never blocks or
+    slows down the others."""
+    poll_seconds = satellite.SOURCES[source_id].get("poll_seconds", SATELLITE_POLL_SECONDS)
     while True:
         try:
-            frame = await satellite.poll_once()
+            frame = await satellite.poll_once(source_id)
             if frame:
-                print(f"[satellite] new frame captured -> {frame['filename']}")
+                print(f"[satellite:{source_id}] new frame captured -> {frame['filename']}")
                 await manager.broadcast({
                     "type": "satellite_update",
                     "frame": serialize_satellite_frame(frame),
                 })
         except Exception as exc:
-            print(f"[satellite] poll failed: {exc}")
-        await asyncio.sleep(SATELLITE_POLL_SECONDS)
+            print(f"[satellite:{source_id}] poll failed: {exc}")
+        await asyncio.sleep(poll_seconds)
 
 
 # Demo-only social/citizen listener. Clearly separated from the real
@@ -476,14 +497,18 @@ async def lifespan(app: FastAPI):
         seed_demo_history()
     weather_task = asyncio.create_task(poll_weather_loop())
     social_task = asyncio.create_task(simulate_social_feed())
-    satellite_task = asyncio.create_task(satellite_poll_loop())
+    satellite_tasks = [
+        asyncio.create_task(satellite_poll_loop(source_id))
+        for source_id in satellite.SOURCES
+    ]
     yield
     weather_task.cancel()
     social_task.cancel()
-    satellite_task.cancel()
+    for t in satellite_tasks:
+        t.cancel()
 
 
-app = FastAPI(title="MineCodeXeX Weather Big-Data Platform", lifespan=lifespan)
+app = FastAPI(title="VAYUNET Weather Big-Data Platform", lifespan=lifespan)
 app.mount("/satellite_frames", StaticFiles(directory=str(satellite.STORAGE_DIR)), name="satellite_frames")
 
 
@@ -541,25 +566,46 @@ async def stations():
 
 
 # ---------------- Satellite / Cloud Map ----------------
+def _check_source(source: str) -> None:
+    if source not in satellite.SOURCES:
+        raise HTTPException(status_code=404, detail=f"unknown satellite source '{source}'")
+
+
+@app.get("/api/satellite/sources")
+async def satellite_sources():
+    """Available feeds plus, for today, how many frames each has — the
+    frontend uses the frame count to default to whichever source currently
+    has the longest timelapse, while still letting the user switch freely."""
+    today = datetime.now(timezone.utc).astimezone(satellite.IST).date().isoformat()
+    counts = await asyncio.to_thread(db.count_satellite_frames_for_date, today)
+    sources = satellite.list_sources()
+    for s in sources:
+        s["frames_today"] = counts.get(s["id"], 0)
+    return {"date": today, "sources": sources}
+
+
 @app.get("/api/satellite/latest")
-async def satellite_latest():
-    row = await asyncio.to_thread(db.latest_satellite_frame)
+async def satellite_latest(source: str = "imd"):
+    _check_source(source)
+    row = await asyncio.to_thread(db.latest_satellite_frame, source)
     if not row:
         raise HTTPException(status_code=404, detail="no satellite frames captured yet — check back shortly")
     return serialize_satellite_frame(row)
 
 
 @app.get("/api/satellite/frames")
-async def satellite_frames(date: Optional[str] = None):
+async def satellite_frames(source: str = "imd", date: Optional[str] = None):
+    _check_source(source)
     if not date:
         date = datetime.now(timezone.utc).astimezone(satellite.IST).date().isoformat()
-    rows = await asyncio.to_thread(db.list_satellite_frames, date)
-    return {"date": date, "frames": [serialize_satellite_frame(r) for r in rows]}
+    rows = await asyncio.to_thread(db.list_satellite_frames, source, date)
+    return {"source": source, "date": date, "frames": [serialize_satellite_frame(r) for r in rows]}
 
 
 @app.get("/api/satellite/dates")
-async def satellite_dates():
-    return await asyncio.to_thread(db.list_satellite_dates)
+async def satellite_dates(source: str = "imd"):
+    _check_source(source)
+    return await asyncio.to_thread(db.list_satellite_dates, source)
 
 
 # ---------------- WebSocket ----------------
