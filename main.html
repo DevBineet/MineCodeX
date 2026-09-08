@@ -1246,6 +1246,11 @@ document.getElementById('sat-play-btn').onclick = () => {
 ============================================================ */
 const liveLabel = document.getElementById('live-label');
 let usingSimulation = false;
+let simulationTimer = null;
+let reconnectAttempts = 0;
+let reconnectTimer = null;
+const RECONNECT_BASE_MS = 2000;
+const RECONNECT_MAX_MS = 30000;
 
 function applyWeatherUpdate(payload){
   document.getElementById('max-temp').innerText = payload.max_temp + ' °C';
@@ -1316,8 +1321,13 @@ function renderHotspots(payload){
 }
 
 function startSimulation(){
+  // A fallback so the panel isn't blank while we keep trying to reach
+  // the real backend in the background (see scheduleReconnect below) —
+  // NOT a permanent mode. The moment the real WebSocket connects, this
+  // is torn down and live data takes over.
+  if (usingSimulation) return;  // already running, don't stack intervals
   usingSimulation = true;
-  liveLabel.textContent = 'SIMULATED FEED (DEMO)';
+  liveLabel.textContent = 'SIMULATED FEED (DEMO) — retrying live connection…';
   const cities = [
     { name:"Mumbai, Maharashtra" }, { name:"Chennai, Tamil Nadu" }, { name:"Jaipur, Rajasthan" },
     { name:"Guwahati, Assam" }, { name:"Bengaluru, Karnataka" }, { name:"Bhubaneswar, Odisha" },
@@ -1347,12 +1357,40 @@ function startSimulation(){
     });
   };
   tick();
-  setInterval(tick, 60000);
+  simulationTimer = setInterval(tick, 60000);
 }
 
-try {
-  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const socket = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+function stopSimulation(){
+  if (simulationTimer) { clearInterval(simulationTimer); simulationTimer = null; }
+  usingSimulation = false;
+}
+
+/* ------------------------------------------------------------
+   Real backend connection with automatic reconnect.
+   A single failed/closed socket must NOT permanently strand the
+   dashboard on fake data — Render (and any host) can cold-start
+   slowly or drop an idle connection, so we keep retrying with
+   backoff in the background and switch back to live data the
+   moment a connection succeeds, regardless of how long that takes.
+------------------------------------------------------------ */
+function connectWebSocket(){
+  let socket;
+  try {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    socket = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+  } catch (e) {
+    scheduleReconnect();
+    if (!usingSimulation) startSimulation();
+    return;
+  }
+
+  socket.onopen = () => {
+    reconnectAttempts = 0;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    stopSimulation();
+    liveLabel.textContent = 'LIVE INGESTION ACTIVE';
+  };
+
   socket.onmessage = e => {
     const payload = JSON.parse(e.data);
     if (payload.type === 'weather_update'){
@@ -1399,11 +1437,25 @@ try {
       }
     }
   };
-  socket.onerror = () => { if (!usingSimulation) { socket.close(); startSimulation(); } };
-  socket.onclose = () => { if (!usingSimulation) startSimulation(); };
-} catch (e) {
-  startSimulation();
+
+  socket.onerror = () => { socket.close(); };
+  socket.onclose = () => {
+    if (!usingSimulation) startSimulation();
+    scheduleReconnect();
+  };
 }
+
+function scheduleReconnect(){
+  if (reconnectTimer) return;  // a retry is already queued
+  const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * Math.pow(1.6, reconnectAttempts));
+  reconnectAttempts += 1;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectWebSocket();
+  }, delay);
+}
+
+connectWebSocket();
 
 /* ============================================================
    5. MOBILE TAB NAVIGATION
