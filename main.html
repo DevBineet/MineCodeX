@@ -111,7 +111,10 @@
   .hotspot-card{
     background:var(--bg-card);border:1px solid var(--border);
     padding:11px 12px;border-radius:10px;margin-bottom:8px;
+    cursor:pointer;transition:border-color .15s,background .15s;
   }
+  .hotspot-card:hover{border-color:var(--text-faint);}
+  .hotspot-card.selected{border-color:var(--amber);background:rgba(251,146,60,.06);}
   .hotspot-top{display:flex;align-items:center;gap:7px;margin-bottom:4px;}
   .hotspot-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;}
   .hotspot-city{font-family:var(--font-display);font-weight:600;font-size:0.82rem;color:var(--text);}
@@ -1465,15 +1468,22 @@ function applyWeatherUpdate(payload){
 }
 
 /* ---------- Emerging Pattern Watch ---------- */
+let LAST_HOTSPOTS = [];       // most recent payload.hotspots, indexed for click handlers below
+let coneLayer = null;         // the currently-drawn forecast cone (cleared before drawing a new one)
+let selectedHotspotKey = null; // `${city}|${state}` of the hotspot whose cone is on screen
+
 function renderHotspots(payload){
+  LAST_HOTSPOTS = payload.hotspots || [];
   const list = document.getElementById('hotspot-list');
-  const hotspots = payload.hotspots || [];
-  if (!hotspots.length){
+  if (!LAST_HOTSPOTS.length){
     list.innerHTML = '<div class="hotspot-empty">No clustering patterns detected in the last '
       + (payload.window_minutes || 180) + ' minutes.</div>';
+    // The hotspot behind the cone on screen no longer exists — clear it
+    // rather than leaving a stale cone with nothing in the list to match it.
+    clearHotspotCone();
     return;
   }
-  list.innerHTML = hotspots.map(h => {
+  list.innerHTML = LAST_HOTSPOTS.map((h, i) => {
     const f = h.forecast || {};
     let coneHtml;
     if (f.available){
@@ -1487,8 +1497,10 @@ function renderHotspots(payload){
     } else {
       coneHtml = `<div class="hotspot-reason">${f.reason || 'Not enough surrounding signal to project a direction yet.'}</div>`;
     }
+    const key = `${h.city}|${h.state}`;
+    const isSelected = key === selectedHotspotKey;
     return `
-      <div class="hotspot-card">
+      <div class="hotspot-card${isSelected ? ' selected' : ''}" data-index="${i}">
         <div class="hotspot-top">
           <span class="hotspot-dot" style="background:${h.color}"></span>
           <span class="hotspot-city">${h.city}, ${h.state}</span>
@@ -1498,6 +1510,80 @@ function renderHotspots(payload){
         ${coneHtml}
       </div>`;
   }).join('');
+
+  list.querySelectorAll('.hotspot-card').forEach(card => {
+    card.onclick = () => focusHotspot(LAST_HOTSPOTS[+card.dataset.index]);
+  });
+
+  // If the hotspot behind the currently-drawn cone is still in this
+  // refreshed list, leave the cone as-is; if it dropped out, clear it.
+  if (selectedHotspotKey && !LAST_HOTSPOTS.some(h => `${h.city}|${h.state}` === selectedHotspotKey)){
+    clearHotspotCone();
+  }
+}
+
+function clearHotspotCone(){
+  if (coneLayer) { map.removeLayer(coneLayer); coneLayer = null; }
+  selectedHotspotKey = null;
+  document.querySelectorAll('.hotspot-card.selected').forEach(c => c.classList.remove('selected'));
+}
+
+// Draws the hotspot's forecast cone (origin + low/center/high spread lines,
+// straight from hotspots.py's compute_forecast) on the live map, flies the
+// view to fit it, and highlights the selected candidate cities — the same
+// idea as a weather-agency cyclone track/cone graphic, built from the
+// pattern-detection geometry the backend already computes.
+function focusHotspot(h){
+  clearHotspotCone();
+  selectedHotspotKey = `${h.city}|${h.state}`;
+  document.querySelectorAll('.hotspot-card').forEach(card => {
+    const idx = +card.dataset.index;
+    card.classList.toggle('selected', LAST_HOTSPOTS[idx] === h);
+  });
+
+  if (mapMode !== 'reports') setMapMode('reports');
+  if (window.innerWidth <= 880) switchTab('map');
+
+  const f = h.forecast;
+  const originLat = f?.origin?.lat, originLon = f?.origin?.lon;
+
+  if (!f || !f.available || !f.lines){
+    // No confident direction yet — just center on the hotspot itself.
+    if (originLat != null) map.flyTo([originLat, originLon], 8, { duration: 0.8 });
+    return;
+  }
+
+  const toLatLngs = pts => pts.map(p => [p.lat, p.lon]);
+  const low = toLatLngs(f.lines.low);
+  const high = toLatLngs(f.lines.high);
+  const center = toLatLngs(f.lines.center);
+
+  const group = L.layerGroup();
+
+  // Filled cone: out along the low edge, back along the high edge.
+  L.polygon([...low, ...high.slice().reverse()], {
+    color: f.color, weight: 1, opacity: 0.7,
+    fillColor: f.color, fillOpacity: 0.14
+  }).addTo(group);
+  L.polyline(center, { color: f.color, weight: 2, opacity: 0.9, dashArray: '4,5' }).addTo(group);
+  L.polyline(low,  { color: f.color, weight: 1, opacity: 0.55 }).addTo(group);
+  L.polyline(high, { color: f.color, weight: 1, opacity: 0.55 }).addTo(group);
+
+  L.circleMarker([originLat, originLon], {
+    radius: 6, color: '#fff', weight: 2, fillColor: f.color, fillOpacity: 1
+  }).bindTooltip(`${h.city}, ${h.state} · ${h.event}`).addTo(group);
+
+  (f.next_cities || []).forEach(nc => {
+    L.circleMarker([nc.lat, nc.lon], {
+      radius: 5, color: '#0b0f1a', weight: 1, fillColor: f.color,
+      fillOpacity: nc.already_reporting ? 0.95 : 0.45
+    }).bindTooltip(`${nc.name} · ${Math.round(nc.probability * 100)}% · ~${nc.eta_hours}h`).addTo(group);
+  });
+
+  coneLayer = group.addTo(map);
+  map.flyToBounds(L.latLngBounds([...low, ...high, [originLat, originLon]]), {
+    padding: [40, 40], maxZoom: 8, duration: 0.9
+  });
 }
 
 function startSimulation(){
