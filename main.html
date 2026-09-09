@@ -36,6 +36,7 @@
     --font-display:'Space Grotesk', sans-serif;
     --font-body:'Inter', sans-serif;
     --font-mono:'JetBrains Mono', monospace;
+    --tabbar-h:64px;
   }
   *{box-sizing:border-box;margin:0;padding:0;}
   html,body{height:100%;}
@@ -181,6 +182,14 @@
   }
   .map-mode-toggle button.active{color:var(--cyan);background:rgba(34,211,238,0.12);}
 
+  /* Hide the report-view overlays (event key, filter pills, wind/view
+     toggles) while the cloud map is open — they don't apply to satellite
+     imagery and were floating on top of it as visual clutter. */
+  #map-container.cloud-mode .map-legend,
+  #map-container.cloud-mode .filter-bar,
+  #map-container.cloud-mode .wind-toggle,
+  #map-container.cloud-mode .view-toggle{display:none;}
+
   #cloud-map-panel{
     position:absolute;inset:0;z-index:900;display:none;
     background:#04070f;flex-direction:column;
@@ -189,9 +198,34 @@
   .cloud-map-frame{
     flex:1;display:flex;align-items:center;justify-content:center;
     overflow:hidden;position:relative;padding:56px 12px 8px;
+    cursor:grab;touch-action:none;
   }
-  .cloud-map-frame img{max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;display:none;}
+  .cloud-map-frame.dragging{cursor:grabbing;}
+  .cloud-map-frame img{
+    max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;display:none;
+    transform-origin:center center;will-change:transform;
+  }
   .cloud-map-frame img.loaded{display:block;}
+  .cloud-map-frame img.zoomed-transition{transition:transform .12s ease-out;}
+
+  .sat-zoom-controls{
+    position:absolute;right:14px;bottom:14px;z-index:5;
+    display:flex;flex-direction:column;gap:6px;
+  }
+  .sat-zoom-controls button{
+    width:30px;height:30px;border-radius:50%;
+    background:rgba(12,17,32,0.85);border:1px solid var(--border);color:var(--text);
+    font-size:0.95rem;font-family:var(--font-mono);cursor:pointer;line-height:1;
+    display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);
+  }
+  .sat-zoom-controls button:hover{border-color:var(--cyan);color:var(--cyan);}
+  .sat-zoom-hint{
+    position:absolute;left:14px;bottom:14px;z-index:5;
+    font-family:var(--font-mono);font-size:0.62rem;color:var(--text-dim);
+    background:rgba(12,17,32,0.72);padding:5px 9px;border-radius:10px;
+    pointer-events:none;transition:opacity .4s ease;
+  }
+  .sat-zoom-hint.hidden{opacity:0;}
   #sat-empty-state{text-align:center;color:var(--text-dim);max-width:340px;padding:0 20px;}
   #sat-empty-state.hidden{display:none;}
   #sat-empty-state p{font-size:0.78rem;margin-top:8px;line-height:1.5;}
@@ -360,10 +394,47 @@
     }
     .mobile-tabbar button.active{color:var(--cyan);background:rgba(34,211,238,0.08);}
     .mobile-tabbar svg{width:16px;height:16px;}
-    .filter-bar{max-width:none;top:auto;bottom:16px;right:10px;}
+
+    /* Floating controls over the map used to sit inside the tab bar's
+       footprint (they have a higher z-index than the bar, so they
+       visually collided with its buttons). Pin them all to a shared
+       offset that clears the bar, stacked with enough gap to not
+       overlap each other. */
+    .filter-bar{
+      max-width:calc(100% - 20px);top:auto;right:10px;
+      bottom:calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 10px);
+    }
     .map-legend{font-size:0.62rem;padding:7px 9px;}
-    .view-toggle{left:10px;bottom:56px;}
-    .wind-toggle{bottom:10px;}
+    .view-toggle{
+      left:10px;
+      bottom:calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 54px);
+    }
+    .wind-toggle{
+      left:10px;
+      bottom:calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 10px);
+    }
+
+    /* Cloud map: the mode toggle and the satellite source picker used to
+       sit on the same top row and crowd each other on narrow screens.
+       Shrink the toggle and move the source row underneath it, letting
+       it scroll horizontally instead of wrapping unpredictably. */
+    .map-mode-toggle{top:8px;}
+    .map-mode-toggle button{padding:7px 12px;font-size:0.62rem;}
+    .sat-source-row{
+      top:52px;left:8px;right:8px;
+      justify-content:flex-start;flex-wrap:nowrap;overflow-x:auto;
+      -webkit-overflow-scrolling:touch;scrollbar-width:none;
+    }
+    .sat-source-row::-webkit-scrollbar{display:none;}
+    .sat-source-row button{flex-shrink:0;}
+    .cloud-map-frame{padding-top:100px;}
+
+    /* Give the timelapse scrubber/caption room above the tab bar instead
+       of running underneath it. */
+    #cloud-map-panel{padding-bottom:calc(var(--tabbar-h) + env(safe-area-inset-bottom));}
+    .sat-zoom-controls{bottom:10px;right:10px;}
+    .sat-zoom-controls button{width:34px;height:34px;}
+    .sat-zoom-hint{left:10px;bottom:14px;font-size:0.58rem;}
   }
   @media (min-width:881px){ .mobile-tabbar{display:none !important;} }
 
@@ -459,13 +530,19 @@
 
     <div id="cloud-map-panel">
       <div class="sat-source-row" id="sat-source-row"><!-- populated from /api/satellite/sources --></div>
-      <div class="cloud-map-frame">
+      <div class="cloud-map-frame" id="cloud-map-frame">
         <img id="sat-image" alt="Satellite cloud imagery">
         <div id="sat-empty-state">
           <div class="dot-spin"></div>
           <p>No frames captured yet for this source.</p>
           <p class="muted" id="sat-empty-note">VAYUNET checks this feed periodically — the first frame usually lands within a few minutes of the server starting.</p>
         </div>
+        <div class="sat-zoom-controls">
+          <button id="sat-zoom-in" title="Zoom in">+</button>
+          <button id="sat-zoom-reset" title="Reset zoom">⟲</button>
+          <button id="sat-zoom-out" title="Zoom out">−</button>
+        </div>
+        <div class="sat-zoom-hint" id="sat-zoom-hint">Scroll or pinch to zoom · drag to pan</div>
       </div>
       <div class="cloud-map-caption">
         <span id="sat-caption-text">Waiting for first frame…</span>
@@ -1125,7 +1202,9 @@ function setMapMode(mode){
   document.getElementById('mode-reports-btn').classList.toggle('active', mode === 'reports');
   document.getElementById('mode-cloud-btn').classList.toggle('active', mode === 'cloud');
   document.getElementById('cloud-map-panel').classList.toggle('active', mode === 'cloud');
+  document.getElementById('map-container').classList.toggle('cloud-mode', mode === 'cloud');
   if (mode === 'cloud' && SAT_SOURCES.length === 0) initSatelliteSources();
+  if (mode === 'cloud') showSatZoomHint();
 }
 document.getElementById('mode-reports-btn').onclick = () => setMapMode('reports');
 document.getElementById('mode-cloud-btn').onclick = () => setMapMode('cloud');
@@ -1160,6 +1239,7 @@ async function selectSource(sourceId){
   currentSource = sourceId;
   satFollowLive = true;
   renderSourceRow();
+  resetSatZoom();
   const meta = SAT_SOURCES.find(s => s.id === sourceId);
   document.getElementById('sat-source-note').textContent =
     `Timelapse plays back today's saved frames (IST). Source: ${meta ? meta.label : sourceId}.`;
@@ -1238,6 +1318,106 @@ document.getElementById('sat-play-btn').onclick = () => {
     showSatFrame(next);
   }, 600);
 };
+
+/* ============================================================
+   3c. CLOUD MAP ZOOM & PAN — the satellite frame is a plain <img>,
+       not a tile layer, so zoom/pan is done with a CSS transform:
+       mouse wheel or the +/- buttons scale it, dragging (mouse or
+       touch) pans it, and a two-finger pinch scales it on touch
+       devices. Resets whenever the source is switched.
+============================================================ */
+const satFrameEl = document.getElementById('cloud-map-frame');
+const satImgEl = document.getElementById('sat-image');
+let satZoom = 1, satPanX = 0, satPanY = 0;
+const SAT_ZOOM_MIN = 1, SAT_ZOOM_MAX = 5;
+
+function applySatTransform(){
+  satImgEl.style.transform = `translate(${satPanX}px, ${satPanY}px) scale(${satZoom})`;
+}
+
+function clampSatPan(){
+  const maxPan = (satZoom - 1) * 260;
+  satPanX = Math.max(-maxPan, Math.min(maxPan, satPanX));
+  satPanY = Math.max(-maxPan, Math.min(maxPan, satPanY));
+}
+
+function setSatZoom(newZoom){
+  newZoom = Math.max(SAT_ZOOM_MIN, Math.min(SAT_ZOOM_MAX, newZoom));
+  if (newZoom === satZoom) return;
+  satZoom = newZoom;
+  if (satZoom === SAT_ZOOM_MIN) { satPanX = 0; satPanY = 0; }
+  else clampSatPan();
+  applySatTransform();
+}
+
+function resetSatZoom(){
+  satZoom = 1; satPanX = 0; satPanY = 0;
+  applySatTransform();
+}
+
+let satHintTimer = null;
+function showSatZoomHint(){
+  const hint = document.getElementById('sat-zoom-hint');
+  hint.classList.remove('hidden');
+  if (satHintTimer) clearTimeout(satHintTimer);
+  satHintTimer = setTimeout(() => hint.classList.add('hidden'), 3500);
+}
+
+satFrameEl.addEventListener('wheel', (e) => {
+  if (mapMode !== 'cloud') return;
+  e.preventDefault();
+  setSatZoom(satZoom + (e.deltaY > 0 ? -0.35 : 0.35));
+}, { passive: false });
+
+let satDragging = false, satDragStartX = 0, satDragStartY = 0, satPanStartX = 0, satPanStartY = 0;
+const satPointers = new Map();
+let satPinchStartDist = 0, satPinchStartZoom = 1;
+
+satFrameEl.addEventListener('pointerdown', (e) => {
+  if (mapMode !== 'cloud') return;
+  satFrameEl.setPointerCapture(e.pointerId);
+  satPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (satPointers.size === 1 && satZoom > 1){
+    satDragging = true;
+    satFrameEl.classList.add('dragging');
+    satDragStartX = e.clientX; satDragStartY = e.clientY;
+    satPanStartX = satPanX; satPanStartY = satPanY;
+  } else if (satPointers.size === 2){
+    satDragging = false;
+    const pts = [...satPointers.values()];
+    satPinchStartDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    satPinchStartZoom = satZoom;
+  }
+});
+
+satFrameEl.addEventListener('pointermove', (e) => {
+  if (!satPointers.has(e.pointerId)) return;
+  satPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (satPointers.size === 2){
+    const pts = [...satPointers.values()];
+    const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    if (satPinchStartDist > 0) setSatZoom(satPinchStartZoom * (dist / satPinchStartDist));
+  } else if (satDragging){
+    satPanX = satPanStartX + (e.clientX - satDragStartX);
+    satPanY = satPanStartY + (e.clientY - satDragStartY);
+    clampSatPan();
+    applySatTransform();
+  }
+});
+
+function satPointerEnd(e){
+  satPointers.delete(e.pointerId);
+  if (satPointers.size < 2) satPinchStartDist = 0;
+  if (satPointers.size === 0){ satDragging = false; satFrameEl.classList.remove('dragging'); }
+}
+satFrameEl.addEventListener('pointerup', satPointerEnd);
+satFrameEl.addEventListener('pointercancel', satPointerEnd);
+satFrameEl.addEventListener('pointerleave', satPointerEnd);
+satFrameEl.addEventListener('dblclick', () => resetSatZoom());
+
+document.getElementById('sat-zoom-in').onclick = () => setSatZoom(satZoom + 0.6);
+document.getElementById('sat-zoom-out').onclick = () => setSatZoom(satZoom - 0.6);
+document.getElementById('sat-zoom-reset').onclick = () => resetSatZoom();
 
 /* ============================================================
    4. LIVE DATA CHANNEL — WebSocket with local-simulation fallback
