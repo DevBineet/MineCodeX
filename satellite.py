@@ -188,12 +188,7 @@ SOURCES: dict[str, dict] = {
         "poll_seconds": 300,
         "fetch": _fetch_imd,
     },
-    "himawari_india": {
-        "label": "Himawari-9 GeoColor (India crop)",
-        "description": "NOAA/CIRA SLIDER, refreshes ~every 10 min. Lower native resolution over India (near the disk edge).",
-        "poll_seconds": 180,
-        "fetch": _fetch_himawari_india,
-    },
+    
 }
 
 
